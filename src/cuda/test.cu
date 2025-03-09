@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <cuda_runtime.h>
 #include "crypto/aes.h"
+#include "crypto/sha256.h"
 
 // CUDA kernel that encrypts one AES block using ECB mode
 __global__ void aesEncryptKernel(uint8_t *d_data, const uint8_t *d_key) {
@@ -10,9 +11,9 @@ __global__ void aesEncryptKernel(uint8_t *d_data, const uint8_t *d_key) {
     AES_ctx ctx;
     // Initialize the context with the key
     for (int i = 0; i < 50000; i++) {
-        AES_init_ctx(&ctx, d_key);
+        cuda_AES_init_ctx(&ctx, d_key);
         // Encrypt the block (in-place encryption of a 16-byte buffer)
-        AES_ECB_encrypt(&ctx, d_data);
+        cuda_AES_ECB_encrypt(&ctx, d_data);
     }
 }
 
@@ -78,9 +79,82 @@ bool run_aes_test() {
     return success;
 }
 
+
+__global__ void sha256_test_kernel(const unsigned char *input, size_t input_len, unsigned char *digest) {
+    // Each thread computes SHA-256 on its portion of the input
+    cuda_sha256_2blocks(input, input_len, digest);
+    for (int i = 0; i < 100000; i++) {
+        cuda_sha256_2blocks(digest, input_len, digest);
+    }
+}
+
+bool test_sha256() {
+    unsigned char h_input[36] = { 
+        0x2b, 0x7e, 0x15, 0x16,
+        0x28, 0xae, 0xd2, 0xa6,
+        0xab, 0xf7, 0x15, 0x88,
+        0x09, 0xcf, 0x4f, 0x3c,
+        0x2b, 0x7e, 0x15, 0x16,
+        0x28, 0xae, 0xd2, 0xa6,
+        0xab, 0xf7, 0x15, 0x88,
+        0x09, 0xcf, 0x4f, 0x3c,
+        0x3c, 0x3c, 0x3c, 0x3c };
+    unsigned char h_expected_digest[32] = {0x64, 0x8b, 0x3f, 0x9e, 0xcc, 0xb7, 0xee, 0x40, 0xd5, 0xce, 0xc2, 0x62, 0xef, 0x52, 0x53, 0x97, 0xe4, 0xb1, 0xf2, 0xdf, 0x45, 0x65, 0xa7, 0x27, 0xe8, 0x09, 0x8a, 0x90, 0x66, 0xe9, 0x21, 0x89};
+    unsigned char h_digest[32];
+
+    unsigned char *d_input = NULL;
+    unsigned char *d_digest = NULL;
+
+    // Allocate device memory
+    cudaMalloc((void**)&d_input, 36 * sizeof(unsigned char));
+    cudaMalloc((void**)&d_digest, 36 * sizeof(unsigned char));
+
+    // Copy input data from host to device
+    cudaMemcpy(d_input, h_input, 36 * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
+    // Launch the SHA-256 kernel
+    sha256_test_kernel<<<1, 1>>>(d_input, 36, d_digest);
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    float elapsedTime;
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    printf("SHA 256 cuda runtime: %f ms\n", elapsedTime);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    // Copy the digest from device to host
+    cudaMemcpy(h_digest, d_digest, 32 * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+
+    bool success = true;
+    for (int i = 0; i < 32; i++) {
+        if (h_digest[i] != h_expected_digest[i]) {
+            success = false;
+        }
+    }
+
+    if (!success) {
+        printf("SHA 256 encryption test FAIL! Mismatch with expected result. (100000 itr.)\n");
+    } else {
+        printf("SHA 256 test pass\n");
+    }
+
+
+    // Clean up
+    cudaFree(d_input);
+    cudaFree(d_digest);
+    return true;
+}
+
+
 bool run_tests() {
 
     run_aes_test();
+    test_sha256();
     return true;
 }
 

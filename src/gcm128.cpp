@@ -45,11 +45,11 @@ bool GCM_128_verify_tag(const unsigned char* ciphertext, int ciphertext_length,
 
     // Initialize AES context with the given key.
     struct AES_ctx ctx;
-    AES_init_ctx(&ctx, key);
+    cuda_AES_init_ctx(&ctx, key);
 
     // Compute hash subkey H = AES_Encrypt(0^128)
     unsigned char H[16] = {0};
-    AES_ECB_encrypt(&ctx, H);
+    cuda_AES_ECB_encrypt(&ctx, H);
 
     // Construct J0 from nonce.
     // For TLS 1.2, nonce is typically 12 bytes.
@@ -101,7 +101,7 @@ bool GCM_128_verify_tag(const unsigned char* ciphertext, int ciphertext_length,
     // Compute E(K, J0)
     unsigned char E_J0[16];
     array_copy(E_J0, J0, 16);
-    AES_ECB_encrypt(&ctx, E_J0);
+    cuda_AES_ECB_encrypt(&ctx, E_J0);
 
     // The expected tag is computed as: tag = E(K, J0) XOR S
     unsigned char computed_tag[16];

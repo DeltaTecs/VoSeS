@@ -181,17 +181,17 @@ __device__ static void KeyExpansion(uint8_t* d_RoundKey, const uint8_t* d_Key)
   }
 }
 
-__device__ void AES_init_ctx(struct AES_ctx* d_ctx, const uint8_t* d_key)
+__device__ void cuda_AES_init_ctx(struct AES_ctx* d_ctx, const uint8_t* d_key)
 {
   KeyExpansion(d_ctx->RoundKey, d_key);
 }
 #if (defined(CBC) && (CBC == 1)) || (defined(CTR) && (CTR == 1))
-__device__ void AES_init_ctx_iv(struct AES_ctx* d_ctx, const uint8_t* d_key, const uint8_t* d_iv)
+__device__ void cuda_AES_init_ctx_iv(struct AES_ctx* d_ctx, const uint8_t* d_key, const uint8_t* d_iv)
 {
   KeyExpansion(d_ctx->RoundKey, d_key);
   cuda_array_copy (d_ctx->Iv, d_iv, AES_BLOCKLEN);
 }
-__device__ void AES_ctx_set_iv(struct AES_ctx* d_ctx, const uint8_t* d_iv)
+__device__ void cuda_AES_ctx_set_iv(struct AES_ctx* d_ctx, const uint8_t* d_iv)
 {
   cuda_array_copy (d_ctx->Iv, d_iv, AES_BLOCKLEN);
 }
@@ -199,7 +199,7 @@ __device__ void AES_ctx_set_iv(struct AES_ctx* d_ctx, const uint8_t* d_iv)
 
 // This function adds the round key to state.
 // The round key is added to the state by an XOR function.
-__device__ static void AddRoundKey(uint8_t round, state_t* d_state, const uint8_t* d_RoundKey)
+__device__ static void cuda_AddRoundKey(uint8_t round, state_t* d_state, const uint8_t* d_RoundKey)
 {
   uint8_t i,j;
   for (i = 0; i < 4; ++i)
@@ -213,7 +213,7 @@ __device__ static void AddRoundKey(uint8_t round, state_t* d_state, const uint8_
 
 // The SubBytes Function Substitutes the values in the
 // state matrix with values in an S-box.
-__device__ static void SubBytes(state_t* d_state)
+__device__ static void cuda_SubBytes(state_t* d_state)
 {
   uint8_t i, j;
   for (i = 0; i < 4; ++i)
@@ -228,7 +228,7 @@ __device__ static void SubBytes(state_t* d_state)
 // The ShiftRows() function shifts the rows in the state to the left.
 // Each row is shifted with different offset.
 // Offset = Row number. So the first row is not shifted.
-__device__ static void ShiftRows(state_t* d_state)
+__device__ static void cuda_ShiftRows(state_t* d_state)
 {
   uint8_t temp;
 
@@ -262,7 +262,7 @@ __device__ static inline uint8_t xtime(uint8_t x)
 }
 
 // MixColumns function mixes the columns of the state matrix
-__device__ static void MixColumns(state_t* d_state)
+__device__ static void cuda_MixColumns(state_t* d_state)
 {
   uint8_t i;
   uint8_t Tmp, Tm, t;
@@ -312,7 +312,7 @@ static uint8_t getSBoxInvert(uint8_t num)
 // MixColumns function mixes the columns of the state matrix.
 // The method used to multiply may be difficult to understand for the inexperienced.
 // Please use the references to gain more information.
-__device__ static void InvMixColumns(state_t* d_state)
+__device__ static void cuda_InvMixColumns(state_t* d_state)
 {
   int i;
   uint8_t a, b, c, d;
@@ -333,7 +333,7 @@ __device__ static void InvMixColumns(state_t* d_state)
 
 // The SubBytes Function Substitutes the values in the
 // state matrix with values in an S-box.
-__device__ static void InvSubBytes(state_t* d_state)
+__device__ static void cuda_InvSubBytes(state_t* d_state)
 {
   uint8_t i, j;
   for (i = 0; i < 4; ++i)
@@ -345,7 +345,7 @@ __device__ static void InvSubBytes(state_t* d_state)
   }
 }
 
-__device__ static void InvShiftRows(state_t* d_state)
+__device__ static void cuda_InvShiftRows(state_t* d_state)
 {
   uint8_t temp;
 
@@ -375,12 +375,12 @@ __device__ static void InvShiftRows(state_t* d_state)
 #endif // #if (defined(CBC) && CBC == 1) || (defined(ECB) && ECB == 1)
 
 // Cipher is the main function that encrypts the PlainText.
-__device__ static void Cipher(state_t* d_state, const uint8_t* d_RoundKey)
+__device__ static void cuda_Cipher(state_t* d_state, const uint8_t* d_RoundKey)
 {
   uint8_t round = 0;
 
   // Add the First round key to the state before starting the rounds.
-  AddRoundKey(0, d_state, d_RoundKey);
+  cuda_AddRoundKey(0, d_state, d_RoundKey);
 
   // There will be Nr rounds.
   // The first Nr-1 rounds are identical.
@@ -388,25 +388,25 @@ __device__ static void Cipher(state_t* d_state, const uint8_t* d_RoundKey)
   // Last one without MixColumns()
   for (round = 1; ; ++round)
   {
-    SubBytes(d_state);
-    ShiftRows(d_state);
+    cuda_SubBytes(d_state);
+    cuda_ShiftRows(d_state);
     if (round == Nr) {
       break;
     }
-    MixColumns(d_state);
-    AddRoundKey(round, d_state, d_RoundKey);
+    cuda_MixColumns(d_state);
+    cuda_AddRoundKey(round, d_state, d_RoundKey);
   }
   // Add round key to last round
-  AddRoundKey(Nr, d_state, d_RoundKey);
+  cuda_AddRoundKey(Nr, d_state, d_RoundKey);
 }
 
 #if (defined(CBC) && CBC == 1) || (defined(ECB) && ECB == 1)
-__device__ static void InvCipher(state_t* d_state, const uint8_t* d_RoundKey)
+__device__ static void cuda_InvCipher(state_t* d_state, const uint8_t* d_RoundKey)
 {
   uint8_t round = 0;
 
   // Add the First round key to the state before starting the rounds.
-  AddRoundKey(Nr, d_state, d_RoundKey);
+  cuda_AddRoundKey(Nr, d_state, d_RoundKey);
 
   // There will be Nr rounds.
   // The first Nr-1 rounds are identical.
@@ -414,13 +414,13 @@ __device__ static void InvCipher(state_t* d_state, const uint8_t* d_RoundKey)
   // Last one without InvMixColumn()
   for (round = (Nr - 1); ; --round)
   {
-    InvShiftRows(d_state);
-    InvSubBytes(d_state);
-    AddRoundKey(round, d_state, d_RoundKey);
+    cuda_InvShiftRows(d_state);
+    cuda_InvSubBytes(d_state);
+    cuda_AddRoundKey(round, d_state, d_RoundKey);
     if (round == 0) {
       break;
     }
-    InvMixColumns(d_state);
+    cuda_InvMixColumns(d_state);
   }
 
 }
@@ -432,16 +432,16 @@ __device__ static void InvCipher(state_t* d_state, const uint8_t* d_RoundKey)
 #if defined(ECB) && (ECB == 1)
 
 
-__device__ void AES_ECB_encrypt(const struct AES_ctx* d_ctx, uint8_t* d_buf)
+__device__ void cuda_AES_ECB_encrypt(const struct AES_ctx* d_ctx, uint8_t* d_buf)
 {
   // The next function call encrypts the PlainText with the Key using AES algorithm.
-  Cipher((state_t*)d_buf, d_ctx->RoundKey);
+  cuda_Cipher((state_t*)d_buf, d_ctx->RoundKey);
 }
 
-__device__ void AES_ECB_decrypt(const struct AES_ctx* d_ctx, uint8_t* d_buf)
+__device__ void cuda_AES_ECB_decrypt(const struct AES_ctx* d_ctx, uint8_t* d_buf)
 {
   // The next function call decrypts the PlainText with the Key using AES algorithm.
-  InvCipher((state_t*)d_buf, d_ctx->RoundKey);
+  cuda_InvCipher((state_t*)d_buf, d_ctx->RoundKey);
 }
 
 
@@ -463,14 +463,14 @@ __device__ static void XorWithIv(uint8_t* d_buf, const uint8_t* d_Iv)
   }
 }
 
-__device__ void AES_CBC_encrypt_buffer(struct AES_ctx *d_ctx, uint8_t* d_buf, size_t d_length)
+__device__ void cuda_AES_CBC_encrypt_buffer(struct AES_ctx *d_ctx, uint8_t* d_buf, size_t d_length)
 {
   size_t i;
   uint8_t *Iv = d_ctx->Iv;
   for (i = 0; i < d_length; i += AES_BLOCKLEN)
   {
     XorWithIv(d_buf, Iv);
-    Cipher((state_t*)d_buf, d_ctx->RoundKey);
+    cuda_Cipher((state_t*)d_buf, d_ctx->RoundKey);
     Iv = d_buf;
     d_buf += AES_BLOCKLEN;
   }
@@ -478,14 +478,14 @@ __device__ void AES_CBC_encrypt_buffer(struct AES_ctx *d_ctx, uint8_t* d_buf, si
   cuda_array_copy(d_ctx->Iv, Iv, AES_BLOCKLEN);
 }
 
-__device__ void AES_CBC_decrypt_buffer(struct AES_ctx* d_ctx, uint8_t* d_buf, size_t length)
+__device__ void cuda_AES_CBC_decrypt_buffer(struct AES_ctx* d_ctx, uint8_t* d_buf, size_t length)
 {
   size_t i;
   uint8_t storeNextIv[AES_BLOCKLEN];
   for (i = 0; i < length; i += AES_BLOCKLEN)
   {
     cuda_array_copy(storeNextIv, d_buf, AES_BLOCKLEN);
-    InvCipher((state_t*)d_buf, d_ctx->RoundKey);
+    cuda_InvCipher((state_t*)d_buf, d_ctx->RoundKey);
     XorWithIv(d_buf, d_ctx->Iv);
     cuda_array_copy(d_ctx->Iv, storeNextIv, AES_BLOCKLEN);
     d_buf += AES_BLOCKLEN;
@@ -500,7 +500,7 @@ __device__ void AES_CBC_decrypt_buffer(struct AES_ctx* d_ctx, uint8_t* d_buf, si
 #if defined(CTR) && (CTR == 1)
 
 /* Symmetrical operation: same function for encrypting as for decrypting. Note any IV/nonce should never be reused with the same key */
-__device__ void AES_CTR_xcrypt_buffer(struct AES_ctx* d_ctx, uint8_t* d_buf, size_t length)
+__device__ void cuda_AES_CTR_xcrypt_buffer(struct AES_ctx* d_ctx, uint8_t* d_buf, size_t length)
 {
   uint8_t buffer[AES_BLOCKLEN];
   
@@ -512,7 +512,7 @@ __device__ void AES_CTR_xcrypt_buffer(struct AES_ctx* d_ctx, uint8_t* d_buf, siz
     {
       
       cuda_array_copy(buffer, d_ctx->Iv, AES_BLOCKLEN);
-      Cipher((state_t*)buffer,d_ctx->RoundKey);
+      cuda_Cipher((state_t*)buffer,d_ctx->RoundKey);
 
       /* Increment Iv and handle overflow */
       for (bi = (AES_BLOCKLEN - 1); bi >= 0; --bi)

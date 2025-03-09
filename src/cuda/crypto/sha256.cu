@@ -3,7 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "sha256.h"
-#include "util.h"
+#include "../util.h"
 
 #define ROTR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
 #define SHR(x, n) ((x) >> (n))
@@ -15,7 +15,7 @@
 #define sigma0(x) (ROTR((x), 7) ^ ROTR((x), 18) ^ SHR((x), 3))
 #define sigma1(x) (ROTR((x), 17) ^ ROTR((x), 19) ^ SHR((x), 10))
 
-static const uint32_t initial_hash[8] = {
+__constant__ static const uint32_t initial_hash[8] = {
     0x6a09e667,
     0xbb67ae85,
     0x3c6ef372,
@@ -26,7 +26,7 @@ static const uint32_t initial_hash[8] = {
     0x5be0cd19
 };
 
-static const uint32_t K[64] = {
+__constant__ static const uint32_t K[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
     0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
@@ -45,22 +45,24 @@ static const uint32_t K[64] = {
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
-void sha256(const unsigned char *input, size_t input_len, unsigned char *digest) {
-    size_t original_byte_length = input_len;
-    size_t total_required = original_byte_length + 1 + 8;
-    size_t blocks_needed = (total_required + 63) / 64;
-    size_t padded_length = blocks_needed * 64;
-    size_t k = padded_length - original_byte_length - 1 - 8;
+__device__ void cuda_sha256_2blocks(const unsigned char *d_input, int input_len, unsigned char *d_digest) {
+    int original_byte_length = input_len;
+    int total_required = original_byte_length + 1 + 8;
+    int blocks_needed = (total_required + 63) / 64;
+    int padded_length = blocks_needed * 64;
+    int k = padded_length - original_byte_length - 1 - 8;
 
-    unsigned char *padded_msg = (unsigned char *)malloc(padded_length);
-    if (!padded_msg) {
-        perror("malloc failed");
-        exit(1);
+    if (blocks_needed > 2) {
+        printf("ERROR: cuda_sha256_2blocks was given more data to hash than fits in two 64 byte blocks!");
+        return;
     }
 
-    array_copy(padded_msg, input, original_byte_length);
+    // always allocate 128 bytes for the input in local mem
+    unsigned char padded_msg[2 * 64];
+
+    cuda_array_copy(padded_msg, d_input, original_byte_length);
     padded_msg[original_byte_length] = 0x80;
-    array_set_zero(padded_msg + original_byte_length + 1, k);
+    cuda_array_set_zero(padded_msg + original_byte_length + 1, k);
 
     uint64_t length_bits = (uint64_t)original_byte_length * 8;
     for (int i = 0; i < 8; ++i) {
@@ -120,13 +122,12 @@ void sha256(const unsigned char *input, size_t input_len, unsigned char *digest)
         h[7] += h_i;
     }
 
+    #pragma unroll
     for (int i = 0; i < 8; ++i) {
         uint32_t hi = h[i];
-        digest[i * 4 + 0] = (hi >> 24) & 0xFF;
-        digest[i * 4 + 1] = (hi >> 16) & 0xFF;
-        digest[i * 4 + 2] = (hi >> 8) & 0xFF;
-        digest[i * 4 + 3] = hi & 0xFF;
+        d_digest[i * 4 + 0] = (hi >> 24) & 0xFF;
+        d_digest[i * 4 + 1] = (hi >> 16) & 0xFF;
+        d_digest[i * 4 + 2] = (hi >> 8) & 0xFF;
+        d_digest[i * 4 + 3] = hi & 0xFF;
     }
-
-    free(padded_msg);
 }

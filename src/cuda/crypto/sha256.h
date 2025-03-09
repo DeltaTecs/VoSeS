@@ -2,5 +2,6 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <cuda_runtime.h>
 
-void sha256(const unsigned char *input, size_t input_len, unsigned char *digest);
+__device__ void cuda_sha256_2blocks(const unsigned char *input, int input_len, unsigned char *digest);
