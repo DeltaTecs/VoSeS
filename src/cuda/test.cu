@@ -5,6 +5,8 @@
 #include "crypto/aes.h"
 #include "crypto/sha256.h"
 #include "crypto/sha384.h"
+#include "crypto/hmac-sha256.h"
+#include "crypto/hmac-sha384.h"
 
 // CUDA kernel that encrypts one AES block using ECB mode
 __global__ void aesEncryptKernel(uint8_t *d_data, const uint8_t *d_key) {
@@ -83,9 +85,9 @@ bool run_aes_test() {
 
 __global__ void sha256_test_kernel(const unsigned char *input, short input_len, unsigned char *digest) {
     // Each thread computes SHA-256 on its portion of the input
-    cuda_sha256_2blocks(input, input_len, digest);
+    cuda_sha256(input, input_len, digest);
     for (int i = 0; i < 100000; i++) {
-        cuda_sha256_2blocks(digest, input_len, digest);
+        cuda_sha256(digest, input_len, digest);
     }
 }
 
@@ -94,6 +96,28 @@ __global__ void sha384_test_kernel(const unsigned char *input, short input_len, 
     cuda_sha384(input, input_len, digest);
     for (int i = 0; i < 100000; i++) {
         cuda_sha384(digest, input_len, digest);
+    }
+}
+
+__global__ void hmac_sha256_test_kernel(unsigned char *d_key, short key_len,
+                                         const unsigned char *d_data, short data_len,
+                                         unsigned char *d_hmac_result) {
+    for (int i = 0; i < 50000; i++) {
+        cuda_hmac_sha256_128data(d_key, key_len, d_data, data_len, d_hmac_result);
+        d_key[0] ^= d_hmac_result[0];
+        d_key[1] ^= d_hmac_result[2];
+        d_key[5] ^= d_hmac_result[1];
+    }
+}
+
+__global__ void hmac_sha384_test_kernel(unsigned char *d_key, short key_len,
+                                         const unsigned char *d_data, short data_len,
+                                         unsigned char *d_hmac_result) {
+    for (int i = 0; i < 50000; i++) {
+        cuda_hmac_sha384_128data(d_key, key_len, d_data, data_len, d_hmac_result);
+        d_key[0] ^= d_hmac_result[0];
+        d_key[1] ^= d_hmac_result[2];
+        d_key[5] ^= d_hmac_result[1];
     }
 }
 
@@ -180,7 +204,6 @@ bool test_sha384() {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
-    // Launch the SHA-256 kernel
     sha384_test_kernel<<<1, 1>>>(d_input, in_len, d_digest);
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
@@ -210,8 +233,140 @@ bool test_sha384() {
     // Clean up
     cudaFree(d_input);
     cudaFree(d_digest);
-    return true;
+    return success;
 }
+
+bool test_hmac_sha256() {
+    const int key_len = 48;
+    const int data_len = 64;
+    const int hmac_len = 32;
+    
+    unsigned char h_key[key_len] = { 
+        0xaf, 0xab, 0xc9, 0x2e, 0x6a, 0xc6, 0xa0, 0xa7, 0x85, 0xb6, 0x51, 0x8c, 0x5b, 0xef, 0x8e, 0x10, 0x10, 0xd5, 0xec, 0x2c, 0x95, 0xe8, 0x82, 0x9c, 0xd7, 0x69, 0x38, 0x7e, 0x88, 0x40, 0xd7, 0x3d, 0xfb, 0xd0, 0xe1, 0x7f, 0x4c, 0x9b, 0xdd, 0xda, 0xcd, 0xc6, 0x1f, 0xef, 0x99, 0x2b, 0x3c, 0x06
+    };
+    unsigned char h_data[data_len] = {
+        0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c, 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c, 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c, 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c    };
+    unsigned char h_hmac[hmac_len];
+    unsigned char h_hmac_expected[hmac_len] = {
+        0x12, 0xc5, 0x7f, 0xf6, 0xf1, 0x41, 0xbf, 0xa7, 0xa8, 0xe5, 0x49, 0x28, 0xb1, 0x45, 0x3c, 0xdf, 0xfe, 0xc1, 0x04, 0xb9, 0x46, 0x37, 0x18, 0x45, 0x8e, 0xc0, 0x96, 0x7a, 0x86, 0x10, 0xad, 0x41
+    };
+
+
+    // Allocate device memory.
+    unsigned char *d_key, *d_data, *d_hmac;
+    cudaMalloc((void**)&d_key, key_len * sizeof(unsigned char));
+    cudaMalloc((void**)&d_data, data_len * sizeof(unsigned char));
+    cudaMalloc((void**)&d_hmac, hmac_len * sizeof(unsigned char));
+
+    // Copy host memory to device.
+    cudaMemcpy(d_key, h_key, key_len * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_data, h_data, data_len * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
+    hmac_sha256_test_kernel<<<1, 1>>>(d_key, key_len, d_data, data_len, d_hmac);
+    cudaDeviceSynchronize();
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    float elapsedTime;
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    printf("HMAC SHA 256 cuda runtime: %f ms\n", elapsedTime);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    // Copy the HMAC result back to host.
+    cudaMemcpy(h_hmac, d_hmac, hmac_len * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+
+    bool success = true;
+    for (int i = 0; i < 48; i++) {
+        if (h_hmac[i] != h_hmac_expected[i]) {
+            success = false;
+        }
+    }
+    
+    if (!success) {
+        printf("HMAC SHA 256 encryption test FAIL! Mismatch with expected result. (50000 itr.)\n");
+    } else {
+        printf("HMAC SHA 256 test pass\n");
+    }
+
+    // Free device memory.
+    cudaFree(d_key);
+    cudaFree(d_data);
+    cudaFree(d_hmac);
+    return success;
+}
+
+bool test_hmac_sha384() {
+    const int key_len  = 48;
+    const int data_len = 64;
+    const int hmac_len = 48;   // SHA-384 produces 384 bits (48 bytes)
+
+    unsigned char h_key[key_len] = { 
+        0xaf, 0xab, 0xc9, 0x2e, 0x6a, 0xc6, 0xa0, 0xa7, 0x85, 0xb6, 0x51, 0x8c, 0x5b, 0xef, 0x8e, 0x10, 0x10, 0xd5, 0xec, 0x2c, 0x95, 0xe8, 0x82, 0x9c, 0xd7, 0x69, 0x38, 0x7e, 0x88, 0x40, 0xd7, 0x3d, 0xfb, 0xd0, 0xe1, 0x7f, 0x4c, 0x9b, 0xdd, 0xda, 0xcd, 0xc6, 0x1f, 0xef, 0x99, 0x2b, 0x3c, 0x06
+    };
+
+    unsigned char h_data[data_len] = {
+        0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c, 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c, 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c, 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c
+    };
+
+    unsigned char h_hmac[hmac_len];
+    // Expected HMAC-SHA384 result computed by a reference implementation.
+    unsigned char h_hmac_expected[hmac_len] = {
+        0xf4, 0xc5, 0x4b, 0xea, 0x00, 0x79, 0x59, 0x8b, 0x7d, 0xf2, 0x1c, 0xc6, 0x2f, 0x39, 0xe2, 0xf1, 0x1f, 0xb6, 0x8b, 0xcc, 0x78, 0x30, 0x2a, 0xbf, 0x47, 0x9c, 0xcc, 0xd1, 0x22, 0x88, 0x9a, 0xa8, 0xa4, 0x34, 0xa3, 0x2e, 0xa1, 0xb4, 0xb8, 0x5f, 0x59, 0x9d, 0x5f, 0xe9, 0xed, 0xc7, 0xe2, 0xab
+    };
+
+    // Allocate device memory.
+    unsigned char *d_key, *d_data, *d_hmac;
+    cudaMalloc((void**)&d_key, key_len * sizeof(unsigned char));
+    cudaMalloc((void**)&d_data, data_len * sizeof(unsigned char));
+    cudaMalloc((void**)&d_hmac, hmac_len * sizeof(unsigned char));
+
+    // Copy host memory to device.
+    cudaMemcpy(d_key, h_key, key_len * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_data, h_data, data_len * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
+    // Launch the HMAC-SHA384 test kernel.
+    hmac_sha384_test_kernel<<<1, 1>>>(d_key, key_len, d_data, data_len, d_hmac);
+    cudaDeviceSynchronize();
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    float elapsedTime;
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    printf("HMAC SHA 384 cuda runtime: %f ms\n", elapsedTime);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    // Copy the HMAC result back to host.
+    cudaMemcpy(h_hmac, d_hmac, hmac_len * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+
+    bool success = true;
+    for (int i = 0; i < hmac_len; i++) {
+        if (h_hmac[i] != h_hmac_expected[i]) {
+            success = false;
+            break;
+        }
+    }
+    
+    if (!success) {
+        printf("HMAC SHA 384 test FAIL! Mismatch with expected result.\n");
+    } else {
+        printf("HMAC SHA 384 test pass\n");
+    }
+
+    // Free device memory.
+    cudaFree(d_key);
+    cudaFree(d_data);
+    cudaFree(d_hmac);
+    return success;
+}
+
 
 
 bool run_tests() {
@@ -219,6 +374,8 @@ bool run_tests() {
     run_aes_test();
     test_sha256();
     test_sha384();
+    test_hmac_sha256();
+    test_hmac_sha384();
     return true;
 }
 

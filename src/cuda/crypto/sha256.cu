@@ -45,59 +45,28 @@ __constant__ static const uint32_t c_K[64] = {
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
-__device__ void cuda_sha256_2blocks(const unsigned char *d_input, short input_len, unsigned char *d_digest) {
-    short original_byte_length = input_len;
-    short total_required = original_byte_length + 1 + 8;
-    short blocks_needed = (total_required + 63) / 64;
-    short padded_length = blocks_needed * 64;
-    short k = padded_length - original_byte_length - 1 - 8;
-
-    if (blocks_needed > 2) {
-        printf("ERROR: cuda_sha256_2blocks was given more data to hash than fits in two 64 byte blocks!\n");
-        return;
-    }
-
-    // always allocate 128 bytes for the input in local mem
-    unsigned char padded_msg[2 * 64];
-
-    cuda_array_copy(padded_msg, d_input, original_byte_length);
-    padded_msg[original_byte_length] = 0x80;
-    cuda_array_set_zero(padded_msg + original_byte_length + 1, k);
-
-    uint64_t length_bits = (uint64_t)original_byte_length * 8;
-    for (char i = 0; i < 8; ++i) {
-        padded_msg[padded_length - 8 + i] = (length_bits >> (56 - 8 * i)) & 0xFF;
-    }
-
-    uint32_t h[8] = {c_initial_hash[0], c_initial_hash[1],
-                     c_initial_hash[2], c_initial_hash[3],
-                     c_initial_hash[4], c_initial_hash[5],
-                     c_initial_hash[6], c_initial_hash[7]};
-
-    size_t num_blocks = padded_length / 64;
-    for (size_t i = 0; i < num_blocks; ++i) {
-        const unsigned char *block = padded_msg + i * 64;
+__device__ void process_block(const unsigned char* d_block, uint32_t* d_state) {
         uint32_t W[64];
 
         for (char t = 0; t < 16; ++t) {
-            W[t] = ((uint32_t)block[t * 4] << 24) |
-                   ((uint32_t)block[t * 4 + 1] << 16) |
-                   ((uint32_t)block[t * 4 + 2] << 8) |
-                   ((uint32_t)block[t * 4 + 3]);
+            W[t] = ((uint32_t)d_block[t * 4] << 24) |
+                   ((uint32_t)d_block[t * 4 + 1] << 16) |
+                   ((uint32_t)d_block[t * 4 + 2] << 8) |
+                   ((uint32_t)d_block[t * 4 + 3]);
         }
 
         for (char t = 16; t < 64; ++t) {
             W[t] = sigma1(W[t - 2]) + W[t - 7] + sigma0(W[t - 15]) + W[t - 16];
         }
 
-        uint32_t a = h[0];
-        uint32_t b = h[1];
-        uint32_t c = h[2];
-        uint32_t d = h[3];
-        uint32_t e = h[4];
-        uint32_t f = h[5];
-        uint32_t g = h[6];
-        uint32_t h_i = h[7];
+        uint32_t a = d_state[0];
+        uint32_t b = d_state[1];
+        uint32_t c = d_state[2];
+        uint32_t d = d_state[3];
+        uint32_t e = d_state[4];
+        uint32_t f = d_state[5];
+        uint32_t g = d_state[6];
+        uint32_t h_i = d_state[7];
 
         for (char t = 0; t < 64; ++t) {
             uint32_t T1 = h_i + Sigma1(e) + Ch(e, f, g) + c_K[t] + W[t];
@@ -112,14 +81,78 @@ __device__ void cuda_sha256_2blocks(const unsigned char *d_input, short input_le
             a = T1 + T2;
         }
 
-        h[0] += a;
-        h[1] += b;
-        h[2] += c;
-        h[3] += d;
-        h[4] += e;
-        h[5] += f;
-        h[6] += g;
-        h[7] += h_i;
+        d_state[0] += a;
+        d_state[1] += b;
+        d_state[2] += c;
+        d_state[3] += d;
+        d_state[4] += e;
+        d_state[5] += f;
+        d_state[6] += g;
+        d_state[7] += h_i;
+}
+
+__device__ void cuda_sha256(const unsigned char *d_input, short input_len, unsigned char *d_digest) {
+    short original_byte_length = input_len;
+    short total_required = original_byte_length + 1 + 8;
+    short blocks_needed = (total_required + 63) / 64;
+    short padded_length = blocks_needed * 64;
+
+    uint64_t length_bits = (uint64_t)original_byte_length * 8;
+
+    uint32_t h[8] = {c_initial_hash[0], c_initial_hash[1],
+                     c_initial_hash[2], c_initial_hash[3],
+                     c_initial_hash[4], c_initial_hash[5],
+                     c_initial_hash[6], c_initial_hash[7]};
+
+    // process main blocks
+    int num_blocks = padded_length / 64;
+    for (size_t i = 0; i < num_blocks - 1; ++i) {
+        const unsigned char *block = d_input + i * 64;
+        process_block(block, h);
+    }
+
+    // process last block (and possibly an extra block if needed)
+    unsigned char last_msg_block[64];
+    cuda_array_set_zero(last_msg_block, 64);
+
+    // Compute the number of remaining bytes from the original message
+    const int r = original_byte_length % 64;
+    // Copy the remaining message bytes (if any) into the last block.
+    // (If original_byte_length is a multiple of 64, r will be 0.)
+    cuda_array_copy(last_msg_block, d_input + original_byte_length - r, r);
+    // Append the mandatory 0x80 byte (which is the 1 bit followed by 7 zeros)
+    last_msg_block[r] = 0x80;
+
+    // Now, if there is room in this block for the 8-byte length (i.e. if r <= 55),
+    // then we can finish this block; otherwise, we must process this block and create an extra block.
+    if (r <= 55) {
+        // Append length in bits in the final 8 bytes (big-endian)
+        last_msg_block[56] = (length_bits >> 56) & 0xFF;
+        last_msg_block[57] = (length_bits >> 48) & 0xFF;
+        last_msg_block[58] = (length_bits >> 40) & 0xFF;
+        last_msg_block[59] = (length_bits >> 32) & 0xFF;
+        last_msg_block[60] = (length_bits >> 24) & 0xFF;
+        last_msg_block[61] = (length_bits >> 16) & 0xFF;
+        last_msg_block[62] = (length_bits >> 8)  & 0xFF;
+        last_msg_block[63] = (length_bits)       & 0xFF;
+        // Process this final block
+        process_block(last_msg_block, h);
+    } else {
+        // When r > 55 the current block cannot hold the 64-bit length.
+        // First process the block with the padding (without the length).
+        process_block(last_msg_block, h);
+        // Prepare a new block (all zeros) for the length.
+        unsigned char extra_block[64] = {0};
+        extra_block[56] = (length_bits >> 56) & 0xFF;
+        extra_block[57] = (length_bits >> 48) & 0xFF;
+        extra_block[58] = (length_bits >> 40) & 0xFF;
+        extra_block[59] = (length_bits >> 32) & 0xFF;
+        extra_block[60] = (length_bits >> 24) & 0xFF;
+        extra_block[61] = (length_bits >> 16) & 0xFF;
+        extra_block[62] = (length_bits >> 8)  & 0xFF;
+        extra_block[63] = (length_bits)       & 0xFF;
+        // Process the extra block that holds the length.
+        process_block(extra_block, h);
     }
 
     #pragma unroll
