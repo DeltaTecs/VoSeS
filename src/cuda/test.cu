@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 #include "crypto/aes.h"
 #include "crypto/sha256.h"
+#include "crypto/sha384.h"
 
 // CUDA kernel that encrypts one AES block using ECB mode
 __global__ void aesEncryptKernel(uint8_t *d_data, const uint8_t *d_key) {
@@ -80,11 +81,19 @@ bool run_aes_test() {
 }
 
 
-__global__ void sha256_test_kernel(const unsigned char *input, size_t input_len, unsigned char *digest) {
+__global__ void sha256_test_kernel(const unsigned char *input, short input_len, unsigned char *digest) {
     // Each thread computes SHA-256 on its portion of the input
     cuda_sha256_2blocks(input, input_len, digest);
     for (int i = 0; i < 100000; i++) {
         cuda_sha256_2blocks(digest, input_len, digest);
+    }
+}
+
+__global__ void sha384_test_kernel(const unsigned char *input, short input_len, unsigned char *digest) {
+    // Each thread computes SHA-256 on its portion of the input
+    cuda_sha384(input, input_len, digest);
+    for (int i = 0; i < 100000; i++) {
+        cuda_sha384(digest, input_len, digest);
     }
 }
 
@@ -138,9 +147,63 @@ bool test_sha256() {
     }
 
     if (!success) {
-        printf("SHA 256 encryption test FAIL! Mismatch with expected result. (100000 itr.)\n");
+        printf("SHA 256 encryption test FAIL! Mismatch with expected result. (100001 itr.)\n");
     } else {
         printf("SHA 256 test pass\n");
+    }
+
+
+    // Clean up
+    cudaFree(d_input);
+    cudaFree(d_digest);
+    return true;
+}
+
+bool test_sha384() {
+    const int in_len = 144;
+    unsigned char h_input[in_len] = { 0x40, 0x13, 0x9e, 0xd6, 0xbe, 0x12, 0x8f, 0x61, 0xc3, 0xd7, 0x68, 0xb9, 0x12, 0x31, 0x41, 0x7a, 0xbf, 0x4e, 0x5c, 0x81, 0x3b, 0xc3, 0xba, 0xfa, 0x81, 0x6c, 0xa9, 0x30, 0x02, 0xaa, 0x7b, 0xdf, 0x11, 0x49, 0x54, 0xe8, 0xe8, 0x1e, 0x95, 0x6d, 0x9f, 0x22, 0x8c, 0xb6, 0x5e, 0xa1, 0x56, 0x20, 0x40, 0x13, 0x9e, 0xd6, 0xbe, 0x12, 0x8f, 0x61, 0xc3, 0xd7, 0x68, 0xb9, 0x12, 0x31, 0x41, 0x7a, 0xbf, 0x4e, 0x5c, 0x81, 0x3b, 0xc3, 0xba, 0xfa, 0x81, 0x6c, 0xa9, 0x30, 0x02, 0xaa, 0x7b, 0xdf, 0x11, 0x49, 0x54, 0xe8, 0xe8, 0x1e, 0x95, 0x6d, 0x9f, 0x22, 0x8c, 0xb6, 0x5e, 0xa1, 0x56, 0x20, 0x40, 0x13, 0x9e, 0xd6, 0xbe, 0x12, 0x8f, 0x61, 0xc3, 0xd7, 0x68, 0xb9, 0x12, 0x31, 0x41, 0x7a, 0xbf, 0x4e, 0x5c, 0x81, 0x3b, 0xc3, 0xba, 0xfa, 0x81, 0x6c, 0xa9, 0x30, 0x02, 0xaa, 0x7b, 0xdf, 0x11, 0x49, 0x54, 0xe8, 0xe8, 0x1e, 0x95, 0x6d, 0x9f, 0x22, 0x8c, 0xb6, 0x5e, 0xa1, 0x56, 0x20};
+    unsigned char h_expected_digest[48] = {0xe4, 0x98, 0x15, 0x3e, 0xb4, 0xda, 0x20, 0xfa, 0xb8, 0x34, 0x48, 0x69, 0x54, 0xc6, 0xdc, 0xa6, 0x53, 0xb5, 0xb4, 0x54, 0x4d, 0x8a, 0x38, 0x83, 0x17, 0x7f, 0x2c, 0xef, 0xf5, 0x75, 0x8e, 0xe2, 0xe8, 0x97, 0xd6, 0x8f, 0xdb, 0x3c, 0xe9, 0xa4, 0xff, 0x7d, 0xf1, 0x60, 0xb2, 0xc0, 0x1d, 0xd6};
+    unsigned char h_digest[48];
+
+    unsigned char *d_input = NULL;
+    unsigned char *d_digest = NULL;
+
+    // Allocate device memory
+    cudaMalloc((void**)&d_input, in_len * sizeof(unsigned char));
+    cudaMalloc((void**)&d_digest, 48 * sizeof(unsigned char));
+
+    // Copy input data from host to device
+    cudaMemcpy(d_input, h_input, in_len, cudaMemcpyHostToDevice);
+
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
+    // Launch the SHA-256 kernel
+    sha384_test_kernel<<<1, 1>>>(d_input, in_len, d_digest);
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    float elapsedTime;
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    printf("SHA 384 cuda runtime: %f ms\n", elapsedTime);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    // Copy the digest from device to host
+    cudaMemcpy(h_digest, d_digest, 48 * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+
+    bool success = true;
+    for (int i = 0; i < 48; i++) {
+        if (h_digest[i] != h_expected_digest[i]) {
+            success = false;
+        }
+    }
+    
+    if (!success) {
+        printf("SHA 384 encryption test FAIL! Mismatch with expected result. (100001 itr.)\n");
+    } else {
+        printf("SHA 384 test pass\n");
     }
 
 
@@ -155,6 +218,7 @@ bool run_tests() {
 
     run_aes_test();
     test_sha256();
+    test_sha384();
     return true;
 }
 

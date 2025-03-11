@@ -15,7 +15,7 @@
 #define sigma0(x) (ROTR((x), 7) ^ ROTR((x), 18) ^ SHR((x), 3))
 #define sigma1(x) (ROTR((x), 17) ^ ROTR((x), 19) ^ SHR((x), 10))
 
-__constant__ static const uint32_t initial_hash[8] = {
+__constant__ static const uint32_t c_initial_hash[8] = {
     0x6a09e667,
     0xbb67ae85,
     0x3c6ef372,
@@ -26,7 +26,7 @@ __constant__ static const uint32_t initial_hash[8] = {
     0x5be0cd19
 };
 
-__constant__ static const uint32_t K[64] = {
+__constant__ static const uint32_t c_K[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
     0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
@@ -45,15 +45,15 @@ __constant__ static const uint32_t K[64] = {
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
-__device__ void cuda_sha256_2blocks(const unsigned char *d_input, int input_len, unsigned char *d_digest) {
-    int original_byte_length = input_len;
-    int total_required = original_byte_length + 1 + 8;
-    int blocks_needed = (total_required + 63) / 64;
-    int padded_length = blocks_needed * 64;
-    int k = padded_length - original_byte_length - 1 - 8;
+__device__ void cuda_sha256_2blocks(const unsigned char *d_input, short input_len, unsigned char *d_digest) {
+    short original_byte_length = input_len;
+    short total_required = original_byte_length + 1 + 8;
+    short blocks_needed = (total_required + 63) / 64;
+    short padded_length = blocks_needed * 64;
+    short k = padded_length - original_byte_length - 1 - 8;
 
     if (blocks_needed > 2) {
-        printf("ERROR: cuda_sha256_2blocks was given more data to hash than fits in two 64 byte blocks!");
+        printf("ERROR: cuda_sha256_2blocks was given more data to hash than fits in two 64 byte blocks!\n");
         return;
     }
 
@@ -65,28 +65,28 @@ __device__ void cuda_sha256_2blocks(const unsigned char *d_input, int input_len,
     cuda_array_set_zero(padded_msg + original_byte_length + 1, k);
 
     uint64_t length_bits = (uint64_t)original_byte_length * 8;
-    for (int i = 0; i < 8; ++i) {
+    for (char i = 0; i < 8; ++i) {
         padded_msg[padded_length - 8 + i] = (length_bits >> (56 - 8 * i)) & 0xFF;
     }
 
-    uint32_t h[8] = {initial_hash[0], initial_hash[1],
-                     initial_hash[2], initial_hash[3],
-                     initial_hash[4], initial_hash[5],
-                     initial_hash[6], initial_hash[7]};
+    uint32_t h[8] = {c_initial_hash[0], c_initial_hash[1],
+                     c_initial_hash[2], c_initial_hash[3],
+                     c_initial_hash[4], c_initial_hash[5],
+                     c_initial_hash[6], c_initial_hash[7]};
 
     size_t num_blocks = padded_length / 64;
     for (size_t i = 0; i < num_blocks; ++i) {
         const unsigned char *block = padded_msg + i * 64;
         uint32_t W[64];
 
-        for (int t = 0; t < 16; ++t) {
+        for (char t = 0; t < 16; ++t) {
             W[t] = ((uint32_t)block[t * 4] << 24) |
                    ((uint32_t)block[t * 4 + 1] << 16) |
                    ((uint32_t)block[t * 4 + 2] << 8) |
                    ((uint32_t)block[t * 4 + 3]);
         }
 
-        for (int t = 16; t < 64; ++t) {
+        for (char t = 16; t < 64; ++t) {
             W[t] = sigma1(W[t - 2]) + W[t - 7] + sigma0(W[t - 15]) + W[t - 16];
         }
 
@@ -99,8 +99,8 @@ __device__ void cuda_sha256_2blocks(const unsigned char *d_input, int input_len,
         uint32_t g = h[6];
         uint32_t h_i = h[7];
 
-        for (int t = 0; t < 64; ++t) {
-            uint32_t T1 = h_i + Sigma1(e) + Ch(e, f, g) + K[t] + W[t];
+        for (char t = 0; t < 64; ++t) {
+            uint32_t T1 = h_i + Sigma1(e) + Ch(e, f, g) + c_K[t] + W[t];
             uint32_t T2 = Sigma0(a) + Maj(a, b, c);
             h_i = g;
             g = f;
