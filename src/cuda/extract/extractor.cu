@@ -41,6 +41,27 @@ __device__ float calculateEntropy(const unsigned char* data, int len) {
     return entropy;
 }
 
+__device__ void print_found_secret(unsigned char secret[TLS_MASTER_SECRET_LEN], unsigned char d_client_random[32], unsigned long long location) {
+    printf("\r*** -----------------------------------\n");
+        printf("*** Master Secret match found at data index %lld\n", location);
+        printf("*** Hex value ");
+        for (char i = 0; i < TLS_MASTER_SECRET_LEN; i++) {
+            printf("%02X", secret[i]);
+        }
+        printf("\n");
+        printf("*** Use the following line for your Wireshark master secret log file to decrypt the session of the given finished message and randoms:\n");
+        printf("CLIENT_RANDOM ");
+        for (char i = 0; i < 32; i++) {
+            printf("%02x", d_client_random[i]);
+        }
+        printf(" ");
+        for (char i = 0; i < TLS_MASTER_SECRET_LEN; i++) {
+            printf("%02x", secret[i]);
+        }
+        printf("\n");
+        printf("*** -----------------------------------\n\n");
+}
+
 __global__ void tls_master_secret_scan_gcm128_sha256_kernel(const unsigned char* d_haystack, const long haystack_length,
                                                             const char percentile, unsigned char d_client_random[32],
                                                             unsigned char d_server_random[32], uint64_t seq_num,
@@ -62,19 +83,44 @@ __global__ void tls_master_secret_scan_gcm128_sha256_kernel(const unsigned char*
         // entropy not sufficiently high, free ressources
         return;
     }
-
     // entropy checks out
+    
     bool isMatch = cuda_match_master_secret_gcm128_sha256(candidate, TLS_MASTER_SECRET_LEN, d_client_random, d_server_random, seq_num, d_aad, aad_length, d_chiphertext, ciphertext_length);
     if (isMatch) {
-        printf("\r*** -----------------------------------\n");
-        printf("*** Master Secret match found at data index %lld\n", percentile_index);
-        printf("*** Hex value ");
-        for (char i = 0; i < TLS_MASTER_SECRET_LEN; i++) {
-            printf("%02X", candidate[i]);
-        }
-        printf("\n");
+        printf("\nMatch has entropy %f\n", entropy);
+        print_found_secret(candidate, d_client_random, percentile_index);
         *d_addr_found = percentile_index;
-        printf("*** -----------------------------------\n\n");
+    }
+}
+
+__global__ void tls_master_secret_scan_gcm256_sha384_kernel(const unsigned char* d_haystack, const long haystack_length,
+                                                            const char percentile, unsigned char d_client_random[32],
+                                                            unsigned char d_server_random[32], uint64_t seq_num,
+                                                            unsigned char* d_aad, short aad_length, unsigned char* d_chiphertext,
+                                                            short ciphertext_length, const float entropyThreshold, unsigned long long* d_addr_found) {
+
+    const unsigned long thread_index = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint64_t percentile_index = percentile * blockDim.x * gridDim.x + thread_index;
+
+    if (percentile_index + 1 + TLS_MASTER_SECRET_LEN > haystack_length) {
+        return;
+    }
+
+    unsigned char candidate[TLS_MASTER_SECRET_LEN];
+    cuda_array_copy(candidate, d_haystack + percentile_index, TLS_MASTER_SECRET_LEN);
+    float entropy = calculateEntropy(candidate, TLS_MASTER_SECRET_LEN);
+
+    if (entropy < entropyThreshold) {
+        // entropy not sufficiently high, free ressources
+        return;
+    }
+    // entropy checks out
+    
+    bool isMatch = cuda_match_master_secret_gcm256_sha384(candidate, TLS_MASTER_SECRET_LEN, d_client_random, d_server_random, seq_num, d_aad, aad_length, d_chiphertext, ciphertext_length);
+    if (isMatch) {
+        printf("\nMatch has entropy %f\n", entropy);
+        print_found_secret(candidate, d_client_random, percentile_index);
+        *d_addr_found = percentile_index;
     }
 }
 
@@ -191,14 +237,16 @@ __host__ unsigned long long entropy_scan(const unsigned char* haystack, const ui
     return h_entropy_candidates;
 }
 
-
-__host__ unsigned long long tls_master_secret_gcm_128_sha_256_scan(const unsigned char* haystack, const uint64_t haystack_length,
-                                                                   unsigned char client_random[32], unsigned char server_random[32],
-                                                                   unsigned char* client_finished_msg, int client_finished_length,
-                                                                   const float entropyThreshold) {
-
-    printf("initiating master secret scan (GCM 128, SHA 256) on %lld MB haystack with threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
-
+__host__ unsigned long long tls_master_secret_helper(const unsigned char* haystack, const uint64_t haystack_length,
+                                                    unsigned char client_random[32], unsigned char server_random[32],
+                                                    unsigned char* client_finished_msg, int client_finished_length,
+                                                    const float entropyThreshold, 
+                                                    void (*search_kernel) (const unsigned char*, const long,
+                                                            const char, unsigned char[32],
+                                                            unsigned char[32], uint64_t,
+                                                            unsigned char*, short, unsigned char*,
+                                                            short, const float, unsigned long long*)) {
+                                                        
     const short AAD_LENGTH = 13;
     // extract cipher text
     const int ciphertext_len = client_finished_length - AAD_LENGTH;
@@ -255,11 +303,11 @@ __host__ unsigned long long tls_master_secret_gcm_128_sha_256_scan(const unsigne
 
     
     cudaFuncAttributes attr;
-    cudaFuncGetAttributes(&attr, tls_master_secret_scan_gcm128_sha256_kernel);
+    cudaFuncGetAttributes(&attr, search_kernel);
 
     // Define optimal block and grid dimensions using occupancy calculator
     int min_grid_size = 0, block_size = 0;
-    cudaOccupancyMaxPotentialBlockSize(&min_grid_size, &block_size, tls_master_secret_scan_gcm128_sha256_kernel, 0, 0);
+    cudaOccupancyMaxPotentialBlockSize(&min_grid_size, &block_size, search_kernel, 0, 0);
 
     // Ensure block size does not exceed device capability
     int max_threads_per_block = attr.maxThreadsPerBlock;
@@ -288,7 +336,7 @@ __host__ unsigned long long tls_master_secret_gcm_128_sha_256_scan(const unsigne
     // Launch the CUDA kernel
     printf("\rmaster secret scan 0%%");
     for (int i = 0; i < 100; i++) {
-        tls_master_secret_scan_gcm128_sha256_kernel<<<num_blocks, max_threads_per_block>>>(d_haystack, haystack_length, i,
+        search_kernel<<<num_blocks, max_threads_per_block>>>(d_haystack, haystack_length, i,
             d_client_random, d_server_random, target_seq_num, d_aad, AAD_LENGTH, d_chiphertext, ciphertext_len, entropyThreshold, d_addr_found);
         printf("\rmaster secret scan %d%%", i);
         cudaDeviceSynchronize();
@@ -325,7 +373,26 @@ __host__ unsigned long long tls_master_secret_gcm_128_sha_256_scan(const unsigne
 
     free(ciphertext_bytes);
     free(aad_bytes);
+}
 
-    return h_addr_found;
+
+__host__ unsigned long long tls_master_secret_gcm_128_sha_256_scan(const unsigned char* haystack, const uint64_t haystack_length,
+                                                                   unsigned char client_random[32], unsigned char server_random[32],
+                                                                   unsigned char* client_finished_msg, int client_finished_length,
+                                                                   const float entropyThreshold) {
+
+    printf("initiating master secret scan (GCM 128, SHA 256) on %lld MB haystack with threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
+
+    return tls_master_secret_helper(haystack, haystack_length, client_random, server_random, client_finished_msg, client_finished_length, entropyThreshold, tls_master_secret_scan_gcm128_sha256_kernel);
+}
+
+__host__ unsigned long long tls_master_secret_gcm_256_sha_384_scan(const unsigned char* haystack, const uint64_t haystack_length,
+                                                                   unsigned char client_random[32], unsigned char server_random[32],
+                                                                   unsigned char* client_finished_msg, int client_finished_length,
+                                                                   const float entropyThreshold) {
+
+    printf("initiating master secret scan (GCM 256, SHA 384) on %lld MB haystack with threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
+
+    return tls_master_secret_helper(haystack, haystack_length, client_random, server_random, client_finished_msg, client_finished_length, entropyThreshold, tls_master_secret_scan_gcm256_sha384_kernel);
 }
 
