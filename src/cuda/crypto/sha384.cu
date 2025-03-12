@@ -1,6 +1,6 @@
 
 #include "sha384.h"
-#include "../util.h"
+#include "../cuda_util.h"
 
 #define ROTR(x, n) (((x) >> (n)) | ((x) << (64 - (n))))
 #define SHR(x, n) ((x) >> (n))

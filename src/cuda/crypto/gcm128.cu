@@ -1,6 +1,6 @@
 #include "gcm128.h"
 #include "aes128.h"
-#include "../util.h"
+#include "../cuda_util.h"
 
 // This function verifies the authentication tag of AES-128 GCM as used in TLS 1.2.
 // The input parameter 'd_ciphertext' is assumed to have the tag appended (last 16 bytes).

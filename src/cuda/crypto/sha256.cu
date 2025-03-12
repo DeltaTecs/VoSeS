@@ -3,7 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "sha256.h"
-#include "../util.h"
+#include "../cuda_util.h"
 
 #define ROTR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
 #define SHR(x, n) ((x) >> (n))

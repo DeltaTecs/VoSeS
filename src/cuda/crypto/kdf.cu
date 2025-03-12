@@ -1,5 +1,5 @@
 #include "kdf.h"
-#include "../util.h"
+#include "../cuda_util.h"
 #include "hmac-sha256.h"
 #include "hmac-sha384.h"
 

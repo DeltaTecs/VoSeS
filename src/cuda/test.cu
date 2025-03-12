@@ -15,6 +15,7 @@
 #include "crypto/kdf.h"
 #include "crypto/gcm128.h"
 #include "extract/tls-gcm-extract.h"
+#include "../host_util.h"
 
 __global__ void full_verify_gcm128(unsigned char* d_result, const unsigned char* d_master_secret, short master_secret_len,
                                    unsigned char d_client_random[32], unsigned char d_server_random[32], uint64_t seq_num,
@@ -464,22 +465,6 @@ bool test_hmac_sha384() {
     return success;
 }
 
-__host__ std::vector<unsigned char> hexStringToByteArray(const std::string& hex) {
-    std::vector<unsigned char> byteArray;
-    
-    if (hex.length() % 2 != 0) {
-        throw std::invalid_argument("Hex string must have an even length");
-    }
-    
-    for (size_t i = 0; i < hex.length(); i += 2) {
-        std::string byteString = hex.substr(i, 2);
-        unsigned char byte = static_cast<unsigned char>(std::stoi(byteString, nullptr, 16));
-        byteArray.push_back(byte);
-    }
-    
-    return byteArray;
-}
-
 bool test_full_gcm128() {
 
     std::string master_secret = "afabc92e6ac6a0a785b6518c5bef8e1010d5ec2c95e8829cd769387e8840d73dfbd0e17f4c9bdddacdc61fef992b3c06";
@@ -596,6 +581,5 @@ bool run_tests() {
 }
 
 int main() {
-    test_full_gcm128();
-    //run_tests();
+    run_tests();
 }

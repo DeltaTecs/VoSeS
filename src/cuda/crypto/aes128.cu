@@ -1,5 +1,5 @@
 #include "aes128.h"
-#include "../util.h"
+#include "../cuda_util.h"
 #include <string.h> // CBC mode, for memset
 
 

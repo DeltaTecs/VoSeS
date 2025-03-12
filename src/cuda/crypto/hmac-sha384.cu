@@ -1,6 +1,6 @@
 #include "hmac-sha384.h"
 #include "sha384.h"
-#include "../util.h"
+#include "../cuda_util.h"
 
 #define BLOCK_SIZE 128         // Block size for SHA-384 (and SHA-512)
 #define SHA384_DIGEST_LENGTH 48

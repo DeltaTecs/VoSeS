@@ -1,6 +1,6 @@
 #include "hmac-sha256.h"
 #include "sha256.h"
-#include "../util.h"
+#include "../cuda_util.h"
 
 #define BLOCK_SIZE 64          // Block size for SHA-256
 #define SHA256_DIGEST_LENGTH 32
