@@ -22,25 +22,16 @@
   #define CTR 1
 #endif
 
-//#define AES256 1
 #define AES256 1
 
 #define AES_BLOCKLEN 16 // Block length in bytes - AES is 128b block only
 
-#if defined(AES256) && (AES256 == 1)
-    #define AES_KEYLEN 32
-    #define AES_keyExpSize 240
-#elif defined(AES192) && (AES192 == 1)
-    #define AES_KEYLEN 24
-    #define AES_keyExpSize 208
-#else
-    #define AES_KEYLEN 16   // Key length in bytes
-    #define AES_keyExpSize 176
-#endif
+#define AES256_KEYLEN 32
+#define AES256_keyExpSize 240
 
 struct AES256_ctx
 {
-  uint8_t RoundKey[AES_keyExpSize];
+  uint8_t RoundKey[AES256_keyExpSize];
 #if (defined(CBC) && (CBC == 1)) || (defined(CTR) && (CTR == 1))
   uint8_t Iv[AES_BLOCKLEN];
 #endif

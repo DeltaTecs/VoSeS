@@ -8,7 +8,7 @@
 // Assume this function is provided:
 // void sha256(const unsigned char *input, size_t input_len, unsigned char *digest);
 // max data length 128 bytes
-__device__ void cuda_hmac_sha256_128data(unsigned char *d_key, short key_len,
+__device__ void cuda_hmac_sha256_128data(const unsigned char *d_key, short key_len,
                  const unsigned char *d_data, short data_len,
                  unsigned char *d_hmac_result)
 {
