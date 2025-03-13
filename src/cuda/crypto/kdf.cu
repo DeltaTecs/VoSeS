@@ -154,6 +154,6 @@ __device__ void cuda_build_tls12_aes_gcm_nonce(uint64_t seq_num, const unsigned 
     cuda_array_copy(d_nonce, d_fixed_iv, 4);
     // Next 8 bytes: the explicit IV, which is the record sequence number in network byte order
     for (int i = 0; i < 8; i++) {
-        d_nonce[4 + i] = (unsigned char)((seq_num >> (56 - 8 * i)) & 0xff);
+        d_nonce[4 + i] = (unsigned char)((seq_num >> (8 * i)) & 0xff);
     }
 }

@@ -18,8 +18,6 @@
         }                                      \
     } while (0)
 
-
-
 // Device function to calculate entropy for a given byte array.
 __device__ float calculateEntropy(const unsigned char* data, int len) {
     // Create a local histogram for 256 possible byte values.
@@ -62,7 +60,7 @@ __device__ void print_found_secret(unsigned char secret[TLS_MASTER_SECRET_LEN], 
         printf("*** -----------------------------------\n\n");
 }
 
-__global__ void tls_master_secret_scan_gcm128_sha256_kernel(const unsigned char* d_haystack, const long haystack_length,
+__global__ void tls_master_secret_scan_gcm128_sha256_kernel(const unsigned char* d_haystack, const uint64_t haystack_length,
                                                             const char percentile, unsigned char d_client_random[32],
                                                             unsigned char d_server_random[32], uint64_t seq_num,
                                                             unsigned char* d_aad, short aad_length, unsigned char* d_chiphertext,
@@ -93,7 +91,7 @@ __global__ void tls_master_secret_scan_gcm128_sha256_kernel(const unsigned char*
     }
 }
 
-__global__ void tls_master_secret_scan_gcm256_sha384_kernel(const unsigned char* d_haystack, const long haystack_length,
+__global__ void tls_master_secret_scan_gcm256_sha384_kernel(const unsigned char* d_haystack, const uint64_t haystack_length,
                                                             const char percentile, unsigned char d_client_random[32],
                                                             unsigned char d_server_random[32], uint64_t seq_num,
                                                             unsigned char* d_aad, short aad_length, unsigned char* d_chiphertext,
@@ -124,7 +122,7 @@ __global__ void tls_master_secret_scan_gcm256_sha384_kernel(const unsigned char*
     }
 }
 
-__global__ void entropy_scan_kernel(const char* d_haystack, const long haystack_length, const long needle_length, const char percentile, unsigned long long* candidates, const float entropyThreshold) {
+__global__ void entropy_scan_kernel(const char* d_haystack, const uint64_t haystack_length, const long needle_length, const char percentile, unsigned long long* candidates, const float entropyThreshold) {
 
     const unsigned long thread_index = blockIdx.x * blockDim.x + threadIdx.x;
     const uint64_t percentile_index = percentile * blockDim.x * gridDim.x * ENTROPY_SCAN_CANDIDATES_PER_THREAD + thread_index * ENTROPY_SCAN_CANDIDATES_PER_THREAD;
@@ -241,29 +239,50 @@ __host__ unsigned long long tls_master_secret_helper(const unsigned char* haysta
                                                     unsigned char client_random[32], unsigned char server_random[32],
                                                     unsigned char* client_finished_msg, int client_finished_length,
                                                     const float entropyThreshold, 
-                                                    void (*search_kernel) (const unsigned char*, const long,
+                                                    void (*search_kernel) (const unsigned char*, const uint64_t,
                                                             const char, unsigned char[32],
                                                             unsigned char[32], uint64_t,
                                                             unsigned char*, short, unsigned char*,
                                                             short, const float, unsigned long long*)) {
-                                                        
+
+    if (client_finished_msg[0] != 0x16) {
+        printf("ERROR did not receive a finished message!\n");
+        return 0;
+    }
+
+    bool dtls = client_finished_msg[1] == 0xFE && client_finished_msg[2] == 0xFD;
+    if (dtls) {
+        printf("DTLS detected.\n");
+    }
+
     const short AAD_LENGTH = 13;
-    // extract cipher text
-    const int ciphertext_len = client_finished_length - AAD_LENGTH;
-    unsigned char* ciphertext_bytes = (unsigned char*) malloc(ciphertext_len);
-    memcpy(ciphertext_bytes, client_finished_msg + AAD_LENGTH, ciphertext_len);
-
-    uint64_t target_seq_num = 0;
-    memcpy(&target_seq_num, client_finished_msg + 5, 8);
-
-    // setup associated data
     unsigned char* aad_bytes = (unsigned char*) malloc(AAD_LENGTH);
-    memcpy(aad_bytes, &target_seq_num, 8);
-    aad_bytes[ 8] = 0x16; // type handshake
-    aad_bytes[ 9] = 0x03; // version tls 1.2
-    aad_bytes[10] = 0x03; // version tls 1.2
-    aad_bytes[11] = 0x00; // encode length of encrypted finished message (always 12 bytes -> 16 bytes when padded)
-    aad_bytes[12] = 0x10; // encode length of encrypted finished message (always 12 bytes -> 16 bytes when padded)
+    uint64_t target_seq_num;
+    if (dtls) {
+        memcpy(&target_seq_num, client_finished_msg + 3, 8);
+
+        // first 8 bytes: record and sequence number
+        memcpy(aad_bytes, &target_seq_num, 8);
+        aad_bytes[ 8] = client_finished_msg[0]; // type
+        aad_bytes[ 9] = client_finished_msg[1]; // version
+        aad_bytes[10] = client_finished_msg[2]; // version
+        aad_bytes[11] = 0x00; // encode encrypted length (for dtls 1.2)
+        aad_bytes[12] = 0x18; // encode encrypted length (for dtls 1.2)
+    } else {
+        memcpy(&target_seq_num, client_finished_msg + 5, 8);
+
+        memcpy(aad_bytes, &target_seq_num, 8);
+        aad_bytes[ 8] = client_finished_msg[0]; // type
+        aad_bytes[ 9] = client_finished_msg[1]; // version
+        aad_bytes[10] = client_finished_msg[2]; // version
+        aad_bytes[11] = 0x00; // encode encrypted length (for tls 1.2)
+        aad_bytes[12] = 0x10; // encode encrypted length (for tls 1.2)
+    }
+    
+    // extract cipher text
+    const int ciphertext_len = client_finished_length - AAD_LENGTH - (dtls ? 8 : 0);
+    unsigned char* ciphertext_bytes = (unsigned char*) malloc(ciphertext_len);
+    memcpy(ciphertext_bytes, client_finished_msg + AAD_LENGTH + (dtls ? 8 : 0), ciphertext_len);
 
     unsigned char *d_haystack = nullptr;
     unsigned char* d_client_random = nullptr;
@@ -366,7 +385,6 @@ __host__ unsigned long long tls_master_secret_helper(const unsigned char* haysta
     cudaFree(d_haystack);
     cudaFree(d_client_random);
     cudaFree(d_server_random);
-    cudaFree(d_server_random);
     cudaFree(d_aad);
     cudaFree(d_chiphertext);
     cudaFree(d_addr_found);
@@ -381,7 +399,7 @@ __host__ unsigned long long tls_master_secret_gcm_128_sha_256_scan(const unsigne
                                                                    unsigned char* client_finished_msg, int client_finished_length,
                                                                    const float entropyThreshold) {
 
-    printf("initiating master secret scan (GCM 128, SHA 256) on %lld MB haystack with threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
+    printf("initiating master secret scan (GCM 128, SHA 256) on %lld MB haystack with entropy threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
 
     return tls_master_secret_helper(haystack, haystack_length, client_random, server_random, client_finished_msg, client_finished_length, entropyThreshold, tls_master_secret_scan_gcm128_sha256_kernel);
 }
@@ -391,7 +409,7 @@ __host__ unsigned long long tls_master_secret_gcm_256_sha_384_scan(const unsigne
                                                                    unsigned char* client_finished_msg, int client_finished_length,
                                                                    const float entropyThreshold) {
 
-    printf("initiating master secret scan (GCM 256, SHA 384) on %lld MB haystack with threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
+    printf("initiating master secret scan (GCM 256, SHA 384) on %lld MB haystack with entropy threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
 
     return tls_master_secret_helper(haystack, haystack_length, client_random, server_random, client_finished_msg, client_finished_length, entropyThreshold, tls_master_secret_scan_gcm256_sha384_kernel);
 }
