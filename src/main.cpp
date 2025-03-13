@@ -146,6 +146,7 @@ int main(int argc, char* argv[]) {
     // Load the haystack file.
     std::vector<unsigned char> haystack;
     try {
+        printf("loading haystack file %s ...\n", haystack_path.c_str());
         haystack = loadFileBytes(haystack_path);
     } catch (const std::exception& e) {
         std::cerr << "Error loading haystack file: " << e.what() << std::endl;

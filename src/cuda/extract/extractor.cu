@@ -284,6 +284,8 @@ __host__ unsigned long long tls_master_secret_helper(const unsigned char* haysta
     unsigned char* ciphertext_bytes = (unsigned char*) malloc(ciphertext_len);
     memcpy(ciphertext_bytes, client_finished_msg + AAD_LENGTH + (dtls ? 8 : 0), ciphertext_len);
 
+    unsigned long long h_addr_found = 0;
+
     unsigned char *d_haystack = nullptr;
     unsigned char* d_client_random = nullptr;
     unsigned char* d_server_random = nullptr;
@@ -361,6 +363,11 @@ __host__ unsigned long long tls_master_secret_helper(const unsigned char* haysta
         cudaDeviceSynchronize();
         err = cudaGetLastError();
         if (err != cudaSuccess) printf("Kernel launch error: %s\n", cudaGetErrorString(err));
+
+        // check if secret found already
+        err = cudaMemcpy(&h_addr_found, d_addr_found, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(err, "cudaMemcpy failed for d_addr_found to host");
+        if (h_addr_found != 0) break;
     }
 
     // Record stop time
@@ -376,10 +383,6 @@ __host__ unsigned long long tls_master_secret_helper(const unsigned char* haysta
     if (err != cudaSuccess) {
         printf("ERROR Kernel launch error: %s\n", cudaGetErrorString(err));
     }
-
-    unsigned long long h_addr_found;
-    err = cudaMemcpy(&h_addr_found, d_addr_found, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
-    CUDA_CHECK(err, "cudaMemcpy failed for d_addr_found to host");
 
     // Free the allocated device memory
     cudaFree(d_haystack);
