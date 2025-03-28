@@ -9,6 +9,8 @@
 
 #define TLS_MASTER_SECRET_LEN 48
 #define ENTROPY_SCAN_CANDIDATES_PER_THREAD 1
+// assume haystack memory to be aligned in sections of 4 bytes
+#define MEMORY_ALIGNMENT 4
 
 #define CUDA_CHECK(err, msg)            \
     do {                                       \
@@ -67,7 +69,7 @@ __global__ void tls_master_secret_scan_gcm128_sha256_kernel(const unsigned char*
                                                             short ciphertext_length, const float entropyThreshold, unsigned long long* d_addr_found) {
 
     const unsigned long thread_index = blockIdx.x * blockDim.x + threadIdx.x;
-    const uint64_t percentile_index = percentile * blockDim.x * gridDim.x + thread_index;
+    const uint64_t percentile_index = (percentile * blockDim.x * gridDim.x + thread_index) * MEMORY_ALIGNMENT;
 
     if (percentile_index + 1 + TLS_MASTER_SECRET_LEN > haystack_length) {
         return;
@@ -98,7 +100,7 @@ __global__ void tls_master_secret_scan_gcm256_sha384_kernel(const unsigned char*
                                                             short ciphertext_length, const float entropyThreshold, unsigned long long* d_addr_found) {
 
     const unsigned long thread_index = blockIdx.x * blockDim.x + threadIdx.x;
-    const uint64_t percentile_index = percentile * blockDim.x * gridDim.x + thread_index;
+    const uint64_t percentile_index = (percentile * blockDim.x * gridDim.x + thread_index) * MEMORY_ALIGNMENT;
 
     if (percentile_index + 1 + TLS_MASTER_SECRET_LEN > haystack_length) {
         return;
@@ -334,7 +336,7 @@ __host__ unsigned long long tls_master_secret_helper(const unsigned char* haysta
     int max_threads_per_block = attr.maxThreadsPerBlock;
 
     // Define block and grid dimensions
-    uint64_t candidates_per_percentile = haystack_length / 100;
+    uint64_t candidates_per_percentile = haystack_length / (100 * MEMORY_ALIGNMENT);
     long num_blocks = (candidates_per_percentile + max_threads_per_block - 1) / max_threads_per_block;
 
     printf("#### launch parameters: min gid: %d, min block %d, max threads %d, num blocks: %d, num threads: %d\n",
