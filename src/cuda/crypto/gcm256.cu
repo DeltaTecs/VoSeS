@@ -86,3 +86,40 @@ __device__ bool cuda_GCM_256_verify_tag(const unsigned char* d_ciphertext, int c
 
     return (diff == 0);
 }
+
+
+__device__ bool cuda_GCM_256_cmp_plaintxt_block(const unsigned char* d_ciphertext, int ciphertext_length, 
+                          const unsigned char* d_expected_plaintext, char expected_plaintext_length, 
+                          const unsigned char* d_nonce, const unsigned char* d_key)
+{
+    // Ensure that the ciphertext is at least 16 bytes
+    if (ciphertext_length < 16) return false;
+    // Ensure that the plaintext is actualy max a block
+    if (expected_plaintext_length > 16) {
+        printf("ERROR to much plain text given to compare\n");    
+        return false;
+    }
+
+    // Initialize AES256 context with the given key (assumed to be 256 bits)
+    struct AES256_ctx ctx;
+    cuda_AES256_init_ctx(&ctx, d_key);
+
+    // Construct J1 from d_nonce.
+    // For TLS 1.2, d_nonce is typically 12 bytes, so J1 = d_nonce || 0x00000002.
+    unsigned char J1[16] = {0};
+    cuda_array_copy(J1, d_nonce, 12);
+    J1[15] = 0x02;
+
+    // Compute E(K, J0)
+    unsigned char E_J1[16];
+    cuda_array_copy(E_J1, J1, 16);
+    cuda_AES256_ECB_encrypt(&ctx, E_J1);
+
+    // compare with plaintext
+    volatile unsigned char diff = 0;
+    for (int i = 0; i < expected_plaintext_length; i++) {
+        diff |= d_expected_plaintext[i] ^ d_ciphertext[i] ^ E_J1[i];
+    }
+
+    return (diff == 0);
+}

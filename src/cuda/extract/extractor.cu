@@ -85,7 +85,12 @@ __global__ void tls_master_secret_scan_gcm128_sha256_kernel(const unsigned char*
     }
     // entropy checks out
     
-    bool isMatch = cuda_match_master_secret_gcm128_sha256(candidate, TLS_MASTER_SECRET_LEN, d_client_random, d_server_random, seq_num, d_aad, aad_length, d_chiphertext, ciphertext_length);
+    // client finished plaintext start
+    const char finished_plain_length = 4;
+    unsigned char finished_plain[] = {0x14, 0x00, 0x00, 0x0c};
+
+    bool isMatch = cuda_match_master_secret_gcm128_sha256_plaintxt_cmp(candidate, TLS_MASTER_SECRET_LEN, d_client_random, d_server_random, seq_num, finished_plain, finished_plain_length, d_chiphertext, ciphertext_length);
+    //bool isMatch = cuda_match_master_secret_gcm128_sha256(candidate, TLS_MASTER_SECRET_LEN, d_client_random, d_server_random, seq_num, d_aad, aad_length, d_chiphertext, ciphertext_length);
     if (isMatch) {
         printf("\nMatch has entropy %f\n", entropy);
         print_found_secret(candidate, d_client_random, percentile_index);
@@ -115,8 +120,12 @@ __global__ void tls_master_secret_scan_gcm256_sha384_kernel(const unsigned char*
         return;
     }
     // entropy checks out
+
+    // client finished plaintext start
+    const char finished_plain_length = 6;
+    unsigned char finished_plain[] = {0x14, 0x00, 0x00, 0x0c, 0x00, 0x02};
     
-    bool isMatch = cuda_match_master_secret_gcm256_sha384(candidate, TLS_MASTER_SECRET_LEN, d_client_random, d_server_random, seq_num, d_aad, aad_length, d_chiphertext, ciphertext_length);
+    bool isMatch = cuda_match_master_secret_gcm256_sha384_plaintxt_cmp(candidate, TLS_MASTER_SECRET_LEN, d_client_random, d_server_random, seq_num, finished_plain, finished_plain_length, d_chiphertext, ciphertext_length);
     if (isMatch) {
         printf("\nMatch has entropy %f\n", entropy);
         print_found_secret(candidate, d_client_random, percentile_index);
