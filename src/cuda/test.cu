@@ -469,9 +469,10 @@ bool test_hmac_sha256() {
     cudaMemcpy(h_hmac, d_hmac, hmac_len * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
     bool success = true;
-    for (int i = 0; i < 48; i++) {
+    for (int i = 0; i < hmac_len; i++) {
         if (h_hmac[i] != h_hmac_expected[i]) {
             success = false;
+            break;
         }
     }
     
