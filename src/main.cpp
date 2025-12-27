@@ -205,33 +205,3 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
-
-/*
-int main() {
-
-    const float entropy_threshold = 5.0f;
-
-    std::vector<unsigned char> haystack = loadFileBytes("../resources/vm-dump_dtls.raw");
-
-    std::string client_random = "8da2f8cbda6886eda6070cdb7a38deb3905e3eea1c278222e2432160476d72d7";
-    std::string server_random = "67d1c6448467d6310021ac7f50e0c0d0c3ebc67d2f5ae9808a185fa24d5ddd09";
-    std::string client_finished = "16fefd000100000000000000300001000000000000038c9f9b705edb159414da366ef283310ecbaa50b41632b67910f271a57d6e37e418bdcb74c3feaf";
-
-    std::vector<unsigned char> client_random_bytes = hexStringToByteArray(client_random);
-    std::vector<unsigned char> server_random_bytes = hexStringToByteArray(server_random);
-    std::vector<unsigned char> client_finished_bytes = hexStringToByteArray(client_finished);
-
-    unsigned char client_random_arr[32];
-    unsigned char server_random_arr[32];
-    memcpy(client_random_arr, client_random_bytes.data(), 32);
-    memcpy(server_random_arr, server_random_bytes.data(), 32);
-
-    //scan_entropy(entropy_threshold, haystack);
-
-    //tls_master_secret_gcm_128_sha_256_scan(haystack.data(), haystack.size(), client_random_arr, server_random_arr, 
-    //                                       client_finished_bytes.data(), client_finished_bytes.size(), entropy_threshold);
-    tls_master_secret_gcm_256_sha_384_scan(haystack.data(), haystack.size(), client_random_arr, server_random_arr, 
-                                           client_finished_bytes.data(), client_finished_bytes.size(), entropy_threshold);
-
-    return 0;
-}*/
