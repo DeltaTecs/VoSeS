@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <fstream>
 #include <cuda_runtime.h>
+#include <cstdint>
 #include <cstring>
 #include "host_util.h"
 #include "cuda/extract/extractor.h"
@@ -46,7 +47,9 @@ void printUsage(const char* progName) {
               << "--server_random|-sr <32-byte hex> "
               << "--client_finished|-cf <hex, max 61 bytes> "
               << "--algorithm|-a <gcm_256_sha_384|gcm_128_sha_256> "
-              << "--haystack|-h <path>  (memory dump file path)"
+              << "--haystack|-h <path>  (memory dump file path) "
+              << "[--app_data_record <path>] "
+              << "[--seq_num <int>] "
               << "[--entropy|-e <float>] "
               << "[--entropy-scan|-es]" << std::endl;
 }
@@ -58,6 +61,9 @@ int main(int argc, char* argv[]) {
     std::string client_finished;
     std::string algorithm;
     std::string haystack_path;
+    std::string app_data_record_path;
+    uint64_t seq_num = 0;
+    bool has_seq_num = false;
     float entropy_threshold = 5.0f; // Default entropy threshold.
     bool run_entropy_scan = false;
 
@@ -112,6 +118,23 @@ int main(int argc, char* argv[]) {
                 printUsage(argv[0]);
                 return 1;
             }
+        } else if (arg == "--app_data_record") {
+            if (i + 1 < argc) {
+                app_data_record_path = argv[++i];
+            } else {
+                std::cerr << "Error: Missing value for " << arg << std::endl;
+                printUsage(argv[0]);
+                return 1;
+            }
+        } else if (arg == "--seq_num") {
+            if (i + 1 < argc) {
+                seq_num = std::stoull(argv[++i]);
+                has_seq_num = true;
+            } else {
+                std::cerr << "Error: Missing value for " << arg << std::endl;
+                printUsage(argv[0]);
+                return 1;
+            }
         } else if (arg == "--entropy-scan" || arg == "-es") {
             run_entropy_scan = true;
         } else {
@@ -125,6 +148,12 @@ int main(int argc, char* argv[]) {
     if (client_random.empty() || server_random.empty() || client_finished.empty() ||
         algorithm.empty() || haystack_path.empty()) {
         std::cerr << "Error: Missing required arguments." << std::endl;
+        printUsage(argv[0]);
+        return 1;
+    }
+    bool has_app_data_record = !app_data_record_path.empty();
+    if (has_app_data_record != has_seq_num) {
+        std::cerr << "Error: --app_data_record and --seq_num must be provided together." << std::endl;
         printUsage(argv[0]);
         return 1;
     }
@@ -152,6 +181,24 @@ int main(int argc, char* argv[]) {
     } catch (const std::exception& e) {
         std::cerr << "Error loading haystack file: " << e.what() << std::endl;
         return -1;
+    }
+    std::vector<unsigned char> app_data_record;
+    if (has_app_data_record) {
+        try {
+            printf("loading app data record file %s ...\n", app_data_record_path.c_str());
+            app_data_record = loadFileBytes(app_data_record_path);
+        } catch (const std::exception& e) {
+            std::cerr << "Error loading app data record file: " << e.what() << std::endl;
+            return -1;
+        }
+        if (app_data_record.empty()) {
+            std::cerr << "Error: --app_data_record is empty." << std::endl;
+            return 1;
+        }
+        if (app_data_record[0] != 0x17) {
+            std::cerr << "Error: --app_data_record must start with 0x17 (TLS application data)." << std::endl;
+            return 1;
+        }
     }
     // Convert hex strings to byte arrays.
     std::vector<unsigned char> client_random_bytes = hexStringToByteArray(client_random);

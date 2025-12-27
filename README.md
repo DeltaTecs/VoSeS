@@ -37,6 +37,8 @@ voses.exe
   --client_finished|-cf <hex, max 61 bytes>
   --algorithm|-a <gcm_256_sha_384|gcm_128_sha_256>
   --haystack|-h <path>  (memory dump file path)
+  [--app_data_record <path>]
+  [--seq_num <int>]
   [--entropy|-e <float>]
   [--entropy-scan|-es]
 ```
