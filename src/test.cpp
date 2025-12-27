@@ -7,7 +7,7 @@ int main() {
         std::cout << "All tests passed!" << std::endl;
         return 0;
     } else {
-        std::cout << "Some tests failed." << std::endl;
+        std::cout << "Some tests FAILED!" << std::endl;
         return 1;
     }
 }
