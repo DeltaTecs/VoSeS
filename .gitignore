@@ -53,3 +53,4 @@ obj/
 # If 'voses' is a built binary in the repo root, ignore it.
 # (If it's a source directory/script, remove this line.)
 voses
+run_tests
