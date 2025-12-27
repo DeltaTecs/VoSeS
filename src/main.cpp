@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <fstream>
 #include <cuda_runtime.h>
+#include <cstring>
 #include "host_util.h"
 #include "cuda/extract/extractor.h"
 

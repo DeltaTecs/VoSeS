@@ -169,7 +169,7 @@ __host__ unsigned long long entropy_scan(const unsigned char* haystack, const ui
     char *d_haystack = nullptr;
     unsigned long long *d_entropy_candidates = nullptr;
 
-    printf("initiating entropy scan on %lld MB haystack with threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
+    printf("initiating entropy scan on %lu MB haystack with threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
 
     // Allocate device memory for haystack
     cudaError_t err = cudaMalloc((void**)&d_haystack, haystack_length * sizeof(char));
@@ -200,8 +200,6 @@ __host__ unsigned long long entropy_scan(const unsigned char* haystack, const ui
     const int THREADS_PER_BLOCK = 1024;
     int total_threads = (haystack_length + ENTROPY_SCAN_CANDIDATES_PER_THREAD - 1) / (ENTROPY_SCAN_CANDIDATES_PER_THREAD * 100);
     int num_blocks = (total_threads + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-
-    dim3 dim_threads(1024, 0);
 
     cudaEvent_t start, stop;
     float milliseconds = 0;
@@ -348,7 +346,7 @@ __host__ unsigned long long tls_master_secret_helper(const unsigned char* haysta
     uint64_t candidates_per_percentile = haystack_length / (100 * MEMORY_ALIGNMENT);
     long num_blocks = (candidates_per_percentile + max_threads_per_block - 1) / max_threads_per_block;
 
-    printf("#### launch parameters: min gid: %d, min block %d, max threads %d, num blocks: %d, num threads: %d\n",
+    printf("#### launch parameters: min gid: %d, min block %d, max threads %d, num blocks: %ld, num threads: %d\n",
         min_grid_size, block_size, max_threads_per_block, num_blocks, max_threads_per_block);
 
     printf("  Registers per thread: %d\n", attr.numRegs);
@@ -405,6 +403,8 @@ __host__ unsigned long long tls_master_secret_helper(const unsigned char* haysta
 
     free(ciphertext_bytes);
     free(aad_bytes);
+
+    return h_addr_found;
 }
 
 
@@ -413,7 +413,7 @@ __host__ unsigned long long tls_master_secret_gcm_128_sha_256_scan(const unsigne
                                                                    unsigned char* client_finished_msg, int client_finished_length,
                                                                    const float entropyThreshold) {
 
-    printf("initiating master secret scan (GCM 128, SHA 256) on %lld MB haystack with entropy threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
+    printf("initiating master secret scan (GCM 128, SHA 256) on %lu MB haystack with entropy threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
 
     return tls_master_secret_helper(haystack, haystack_length, client_random, server_random, client_finished_msg, client_finished_length, entropyThreshold, tls_master_secret_scan_gcm128_sha256_kernel);
 }
@@ -423,7 +423,7 @@ __host__ unsigned long long tls_master_secret_gcm_256_sha_384_scan(const unsigne
                                                                    unsigned char* client_finished_msg, int client_finished_length,
                                                                    const float entropyThreshold) {
 
-    printf("initiating master secret scan (GCM 256, SHA 384) on %lld MB haystack with entropy threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
+    printf("initiating master secret scan (GCM 256, SHA 384) on %lu MB haystack with entropy threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
 
     return tls_master_secret_helper(haystack, haystack_length, client_random, server_random, client_finished_msg, client_finished_length, entropyThreshold, tls_master_secret_scan_gcm256_sha384_kernel);
 }

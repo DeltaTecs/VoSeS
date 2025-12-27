@@ -1,4 +1,5 @@
 #include <cuda_runtime.h>
+#include <cstdint>
 
 __device__ bool cuda_match_master_secret_gcm128_sha256(const unsigned char* d_master_secret, short master_secret_len,
                                         unsigned char d_client_random[32], unsigned char d_server_random[32], uint64_t seq_num,

@@ -11,11 +11,23 @@ Then this tool works for you. Requirements:
 - the traffic must be encrypted with tls 1.2 or dtls 1.2
 - this tool supports only GCM_AES_128_SHA_256 and GCM_AES_256_SHA_384 encryption
 
+Install dependencies on Linux (Ubuntu/Debian):
+```bash
+sudo apt update
+sudo apt install build-essential cmake nvidia-cuda-toolkit
+```
+
 Compile on windows:
 1. `mkdir build`
 2. `cd build`
 3. `cmake ..`
 4. `cmake --build .`
+
+Compile on Linux:
+1. `make`
+
+Run Tests:
+1. `make test`
 
 Run:
 ```

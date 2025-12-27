@@ -53,6 +53,97 @@ __global__ void aes256EncryptKernel(uint8_t *d_data, const uint8_t *d_key) {
     }
 }
 
+__global__ void device_check_kernel(int *d_res) {
+    *d_res = 1337;
+}
+
+bool test_device_availability() {
+    // 1) Explicitly check if the system has at least one CUDA-capable device.
+    int deviceCount = 0;
+    cudaError_t err = cudaGetDeviceCount(&deviceCount);
+    if (err != cudaSuccess) {
+        printf("cudaGetDeviceCount failed: %s\n", cudaGetErrorString(err));
+        return false;
+    }
+    if (deviceCount <= 0) {
+        printf("No CUDA-capable devices detected.\n");
+        return false;
+    }
+
+    // Pick the first device with a non-zero compute capability.
+    int selectedDevice = -1;
+    for (int dev = 0; dev < deviceCount; dev++) {
+        cudaDeviceProp prop;
+        cudaError_t propErr = cudaGetDeviceProperties(&prop, dev);
+        if (propErr != cudaSuccess) {
+            printf("cudaGetDeviceProperties(%d) failed: %s\n", dev, cudaGetErrorString(propErr));
+            continue;
+        }
+
+        printf("CUDA device %d: %s (cc %d.%d, globalMem %zu bytes)\n",
+               dev, prop.name, prop.major, prop.minor, (size_t)prop.totalGlobalMem);
+
+        if (prop.major > 0) {
+            selectedDevice = dev;
+            break;
+        }
+    }
+
+    if (selectedDevice < 0) {
+        printf("CUDA runtime reports devices, but none appear CUDA-capable (compute capability 0.x).\n");
+        return false;
+    }
+
+    err = cudaSetDevice(selectedDevice);
+    if (err != cudaSuccess) {
+        printf("cudaSetDevice(%d) failed: %s\n", selectedDevice, cudaGetErrorString(err));
+        return false;
+    }
+
+    // 2) Functional smoke test: allocate, launch a trivial kernel, sync, memcpy.
+    int *d_res = NULL;
+    int h_res = 0;
+
+    err = cudaMalloc((void**)&d_res, sizeof(int));
+    if (err != cudaSuccess) {
+        printf("CUDA malloc failed: %s\n", cudaGetErrorString(err));
+        return false;
+    }
+
+    device_check_kernel<<<1, 1>>>(d_res);
+    
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("Kernel launch failed: %s\n", cudaGetErrorString(err));
+        cudaFree(d_res);
+        return false;
+    }
+
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        printf("CUDA synchronize failed: %s\n", cudaGetErrorString(err));
+        cudaFree(d_res);
+        return false;
+    }
+
+    err = cudaMemcpy(&h_res, d_res, sizeof(int), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        printf("CUDA memcpy failed: %s\n", cudaGetErrorString(err));
+        cudaFree(d_res);
+        return false;
+    }
+
+    cudaFree(d_res);
+
+    if (h_res == 1337) {
+        printf("Device availability test pass\n");
+        return true;
+    } else {
+        printf("Device availability test FAIL! Expected 1337, got %d\n", h_res);
+        return false;
+    }
+}
+
 bool run_aes128_test() {
     const int keylen = 16;
     uint8_t h_key[keylen] = {
@@ -564,6 +655,8 @@ bool test_full_gcm128() {
 
 bool run_tests() {
 
+    if (!test_device_availability()) return false;
+
     bool suc0 = run_aes128_test();
     bool suc1 = run_aes256_test();
     bool suc2 = test_sha256();
@@ -578,8 +671,4 @@ bool run_tests() {
            suc4 && 
            suc5 && 
            suc6;
-}
-
-int main() {
-    run_tests();
 }
