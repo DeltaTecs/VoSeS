@@ -29,6 +29,22 @@ __global__ void full_verify_gcm128(unsigned char* d_result, const unsigned char*
     }
 }
 
+__global__ void tls13_verify_gcm128(unsigned char* d_result, const unsigned char* d_app_traffic_secret_0, short app_traffic_secret_len,
+                                    uint64_t seq_num, unsigned char* d_aad, short aad_length,
+                                    unsigned char* d_chiphertext, short ciphertext_length) {
+    *d_result = cuda_match_app_traffic_secret_0_gcm128_sha256(d_app_traffic_secret_0, app_traffic_secret_len,
+                                                              seq_num, d_aad, aad_length,
+                                                              d_chiphertext, ciphertext_length);
+}
+
+__global__ void tls13_verify_gcm256(unsigned char* d_result, const unsigned char* d_app_traffic_secret_0, short app_traffic_secret_len,
+                                    uint64_t seq_num, unsigned char* d_aad, short aad_length,
+                                    unsigned char* d_chiphertext, short ciphertext_length) {
+    *d_result = cuda_match_app_traffic_secret_0_gcm256_sha384(d_app_traffic_secret_0, app_traffic_secret_len,
+                                                              seq_num, d_aad, aad_length,
+                                                              d_chiphertext, ciphertext_length);
+}
+
 // CUDA kernel that encrypts one AES block using ECB mode
 __global__ void aes128EncryptKernel(uint8_t *d_data, const uint8_t *d_key) {
     // Create an AES context on the device
@@ -741,6 +757,110 @@ bool test_tls13_key_derivation_256() {
     return success;
 }
 
+bool test_tls13_app_traffic_secret_gcm128_sha256() {
+    // Generated via Python HKDF-Expand-Label (SHA-256) + AES-GCM with seq_num=5.
+    std::string app_traffic_secret = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    std::string aad_hex = "1703030020";
+    std::string ciphertext_hex = "09f7c03470ed108b2ed8bfbe5e2c4da925734825e6b5ad53a4493f65514ea966";
+    uint64_t seq_num = 5;
+
+    std::vector<unsigned char> secret_bytes = hexStringToByteArray(app_traffic_secret);
+    std::vector<unsigned char> aad_bytes = hexStringToByteArray(aad_hex);
+    std::vector<unsigned char> ciphertext_bytes = hexStringToByteArray(ciphertext_hex);
+
+    unsigned char* d_result = nullptr;
+    unsigned char* d_secret = nullptr;
+    unsigned char* d_aad = nullptr;
+    unsigned char* d_chiphertext = nullptr;
+
+    cudaMalloc((void**)&d_result, sizeof(unsigned char));
+    cudaMalloc((void**)&d_secret, secret_bytes.size() * sizeof(unsigned char));
+    cudaMalloc((void**)&d_aad, aad_bytes.size() * sizeof(unsigned char));
+    cudaMalloc((void**)&d_chiphertext, ciphertext_bytes.size() * sizeof(unsigned char));
+
+    cudaMemcpy(d_secret, secret_bytes.data(), secret_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_aad, aad_bytes.data(), aad_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_chiphertext, ciphertext_bytes.data(), ciphertext_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    short secret_len = static_cast<short>(secret_bytes.size());
+    short aad_length = static_cast<short>(aad_bytes.size());
+    short ciphertext_length = static_cast<short>(ciphertext_bytes.size());
+
+    tls13_verify_gcm128<<<1, 1>>>(d_result, d_secret, secret_len,
+                                  seq_num, d_aad, aad_length,
+                                  d_chiphertext, ciphertext_length);
+    cudaDeviceSynchronize();
+
+    unsigned char h_result = 0;
+    cudaMemcpy(&h_result, d_result, sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    bool success = (h_result != 0);
+
+    if (!success) {
+        printf("TLS 1.3 app traffic secret GCM128 test FAIL!\n");
+    } else {
+        printf("TLS 1.3 app traffic secret GCM128 test pass\n");
+    }
+
+    cudaFree(d_result);
+    cudaFree(d_secret);
+    cudaFree(d_aad);
+    cudaFree(d_chiphertext);
+
+    return success;
+}
+
+bool test_tls13_app_traffic_secret_gcm256_sha384() {
+    // Generated via Python HKDF-Expand-Label (SHA-384) + AES-GCM with seq_num=7.
+    std::string app_traffic_secret = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f";
+    std::string aad_hex = "1703030024";
+    std::string ciphertext_hex = "a6025e5797aab62289d20d7a7b3d404323aa0ebce015abb1fb6410886f4c7f70b8100555";
+    uint64_t seq_num = 7;
+
+    std::vector<unsigned char> secret_bytes = hexStringToByteArray(app_traffic_secret);
+    std::vector<unsigned char> aad_bytes = hexStringToByteArray(aad_hex);
+    std::vector<unsigned char> ciphertext_bytes = hexStringToByteArray(ciphertext_hex);
+
+    unsigned char* d_result = nullptr;
+    unsigned char* d_secret = nullptr;
+    unsigned char* d_aad = nullptr;
+    unsigned char* d_chiphertext = nullptr;
+
+    cudaMalloc((void**)&d_result, sizeof(unsigned char));
+    cudaMalloc((void**)&d_secret, secret_bytes.size() * sizeof(unsigned char));
+    cudaMalloc((void**)&d_aad, aad_bytes.size() * sizeof(unsigned char));
+    cudaMalloc((void**)&d_chiphertext, ciphertext_bytes.size() * sizeof(unsigned char));
+
+    cudaMemcpy(d_secret, secret_bytes.data(), secret_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_aad, aad_bytes.data(), aad_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_chiphertext, ciphertext_bytes.data(), ciphertext_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    short secret_len = static_cast<short>(secret_bytes.size());
+    short aad_length = static_cast<short>(aad_bytes.size());
+    short ciphertext_length = static_cast<short>(ciphertext_bytes.size());
+
+    tls13_verify_gcm256<<<1, 1>>>(d_result, d_secret, secret_len,
+                                  seq_num, d_aad, aad_length,
+                                  d_chiphertext, ciphertext_length);
+    cudaDeviceSynchronize();
+
+    unsigned char h_result = 0;
+    cudaMemcpy(&h_result, d_result, sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    bool success = (h_result != 0);
+
+    if (!success) {
+        printf("TLS 1.3 app traffic secret GCM256 test FAIL!\n");
+    } else {
+        printf("TLS 1.3 app traffic secret GCM256 test pass\n");
+    }
+
+    cudaFree(d_result);
+    cudaFree(d_secret);
+    cudaFree(d_aad);
+    cudaFree(d_chiphertext);
+
+    return success;
+}
+
 bool test_full_gcm128() {
 
     std::string master_secret = "afabc92e6ac6a0a785b6518c5bef8e1010d5ec2c95e8829cd769387e8840d73dfbd0e17f4c9bdddacdc61fef992b3c06";
@@ -850,7 +970,9 @@ bool run_tests() {
     bool suc5 = test_hmac_sha384();
     bool suc6 = test_tls13_key_derivation();
     bool suc7 = test_tls13_key_derivation_256();
-    bool suc8 = test_full_gcm128();
+    bool suc8 = test_tls13_app_traffic_secret_gcm128_sha256();
+    bool suc9 = test_tls13_app_traffic_secret_gcm256_sha384();
+    bool suc10 = test_full_gcm128();
     return suc0 && 
            suc1 && 
            suc2 && 
@@ -859,5 +981,7 @@ bool run_tests() {
            suc5 && 
            suc6 &&
            suc7 &&
-           suc8;
+           suc8 &&
+           suc9 &&
+           suc10;
 }
