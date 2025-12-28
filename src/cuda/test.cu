@@ -323,6 +323,19 @@ __global__ void tls13_key_derivation_kernel(unsigned char *d_secret, short secre
     }
 }
 
+__global__ void tls13_key_derivation_256_kernel(unsigned char *d_secret, short secret_len,
+                                                unsigned char *d_key, unsigned char *d_iv) {
+    const short key_len = 32;
+    short iter_secret_len = secret_len;
+    for (int i = 0; i < 5000; i++) {
+        cuda_derive_tls13_key_256(d_secret, iter_secret_len, d_key, d_iv);
+        for (int i = 0; i < key_len && i < secret_len; i++) {
+            d_secret[i] ^= d_key[i];
+        }
+        iter_secret_len = key_len;
+    }
+}
+
 bool test_sha256() {
     unsigned char h_input[36] = { 
         0x2b, 0x7e, 0x15, 0x16,
@@ -647,6 +660,87 @@ bool test_tls13_key_derivation() {
     return success;
 }
 
+bool test_tls13_key_derivation_256() {
+    const int secret_len = 48;
+    const int key_len = 32;
+    const int iv_len = 12;
+
+    unsigned char h_secret[secret_len] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+        0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f
+    };
+    // Generated via Python HKDF-Expand-Label (SHA-384) for secret 0x00..0x2f
+    // with 5000 iterations updating secret ^= key each round (first 32 bytes).
+    unsigned char h_expected_key[key_len] = {
+        0x44, 0xcc, 0x1e, 0x83, 0x31, 0x0d, 0x40, 0xc1,
+        0x44, 0xb6, 0x48, 0xb2, 0xa6, 0xb6, 0x9e, 0x08,
+        0x71, 0xe8, 0x4c, 0x43, 0x9f, 0xbf, 0x46, 0x89,
+        0x2c, 0x45, 0xc2, 0x1f, 0x61, 0x58, 0x15, 0x8e
+    };
+    unsigned char h_expected_iv[iv_len] = {
+        0xb0, 0x81, 0xb6, 0x7f, 0x8e, 0xe0, 0x2c, 0x63,
+        0xb0, 0xe9, 0x97, 0x06
+    };
+    unsigned char h_key[key_len];
+    unsigned char h_iv[iv_len];
+
+    unsigned char *d_secret = NULL;
+    unsigned char *d_key = NULL;
+    unsigned char *d_iv = NULL;
+
+    cudaMalloc((void**)&d_secret, secret_len * sizeof(unsigned char));
+    cudaMalloc((void**)&d_key, key_len * sizeof(unsigned char));
+    cudaMalloc((void**)&d_iv, iv_len * sizeof(unsigned char));
+    cudaMemcpy(d_secret, h_secret, secret_len * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
+    tls13_key_derivation_256_kernel<<<1, 1>>>(d_secret, secret_len, d_key, d_iv);
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    float elapsedTime;
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    printf("TLS 1.3 key derivation (AES-256) cuda runtime: %f ms\n", elapsedTime);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    cudaMemcpy(h_key, d_key, key_len * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_iv, d_iv, iv_len * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+
+    bool success = true;
+    for (int i = 0; i < key_len; i++) {
+        if (h_key[i] != h_expected_key[i]) {
+            success = false;
+            break;
+        }
+    }
+    if (success) {
+        for (int i = 0; i < iv_len; i++) {
+            if (h_iv[i] != h_expected_iv[i]) {
+                success = false;
+                break;
+            }
+        }
+    }
+
+    if (!success) {
+        printf("TLS 1.3 key derivation (AES-256) test FAIL! Mismatch with expected result.\n");
+    } else {
+        printf("TLS 1.3 key derivation (AES-256) test pass\n");
+    }
+
+    cudaFree(d_secret);
+    cudaFree(d_key);
+    cudaFree(d_iv);
+    return success;
+}
+
 bool test_full_gcm128() {
 
     std::string master_secret = "afabc92e6ac6a0a785b6518c5bef8e1010d5ec2c95e8829cd769387e8840d73dfbd0e17f4c9bdddacdc61fef992b3c06";
@@ -755,7 +849,8 @@ bool run_tests() {
     bool suc4 = test_hmac_sha256();
     bool suc5 = test_hmac_sha384();
     bool suc6 = test_tls13_key_derivation();
-    bool suc7 = test_full_gcm128();
+    bool suc7 = test_tls13_key_derivation_256();
+    bool suc8 = test_full_gcm128();
     return suc0 && 
            suc1 && 
            suc2 && 
@@ -763,5 +858,6 @@ bool run_tests() {
            suc4 && 
            suc5 && 
            suc6 &&
-           suc7;
+           suc7 &&
+           suc8;
 }

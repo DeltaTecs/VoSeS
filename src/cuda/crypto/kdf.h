@@ -34,6 +34,13 @@ __device__ void cuda_derive_tls12_keys_128(const unsigned char *d_master_secret,
 __device__ void cuda_derive_tls13_key_128(const unsigned char *d_app_traffic_secret_0, short d_app_traffic_secret_len,
                          unsigned char *d_key, unsigned char *d_iv);
 
+// This function implements the TLS 1.3 key expansion for AES-256-GCM-SHA384 application traffic secrets.
+// It derives a 32-byte write key and a 12-byte IV from the application traffic secret using HKDF-Expand-Label.
+//   d_key: 32 bytes
+//   d_iv: 12 bytes
+__device__ void cuda_derive_tls13_key_256(const unsigned char *d_app_traffic_secret_0, short d_app_traffic_secret_len,
+                         unsigned char *d_key, unsigned char *d_iv);
+
 
 /* Build the 12-byte AES-GCM d_nonce for a TLS record.
  * Parameters:
