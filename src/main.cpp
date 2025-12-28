@@ -50,6 +50,7 @@ void printUsage(const char* progName) {
               << "--haystack|-h <path>  (memory dump file path) "
               << "[--app_data_record <path>] "
               << "[--seq_num <int>] "
+              << "[--memory-alignment|-ma <int>] "
               << "[--entropy|-e <float>] "
               << "[--entropy-scan|-es]\n"
               << "       " << progName
@@ -57,6 +58,7 @@ void printUsage(const char* progName) {
               << "--client_random|-cr <32-byte hex> "
               << "(--client|--server) "
               << "--haystack|-h <path>  (memory dump file path) "
+              << "[--memory-alignment|-ma <int>] "
               << "[--entropy|-e <float>] "
               << "[--entropy-scan|-es]" << std::endl;
 }
@@ -74,6 +76,7 @@ int main(int argc, char* argv[]) {
     bool scan_client = false;
     bool scan_server = false;
     float entropy_threshold = 5.0f; // Default entropy threshold.
+    uint64_t memory_alignment = 4;
     bool run_entropy_scan = false;
 
     // Parse command-line arguments.
@@ -127,6 +130,14 @@ int main(int argc, char* argv[]) {
                 printUsage(argv[0]);
                 return 1;
             }
+        } else if (arg == "--memory-alignment" || arg == "-ma") {
+            if (i + 1 < argc) {
+                memory_alignment = std::stoull(argv[++i]);
+            } else {
+                std::cerr << "Error: Missing value for " << arg << std::endl;
+                printUsage(argv[0]);
+                return 1;
+            }
         } else if (arg == "--app_data_record") {
             if (i + 1 < argc) {
                 app_data_record_path = argv[++i];
@@ -155,6 +166,15 @@ int main(int argc, char* argv[]) {
             printUsage(argv[0]);
             return 1;
         }
+    }
+
+    if (memory_alignment == 0) {
+        std::cerr << "Error: --memory-alignment must be greater than zero." << std::endl;
+        return 1;
+    }
+    if (!set_memory_alignment(memory_alignment)) {
+        std::cerr << "Error: failed to set memory alignment." << std::endl;
+        return 1;
     }
 
     bool has_app_data_record = !app_data_record_path.empty();
@@ -257,6 +277,7 @@ int main(int argc, char* argv[]) {
     printf("\n");
 
     printf("specified haystack file path: %s\n", haystack_path.c_str());
+    printf("specified memory alignment: %llu bytes\n", static_cast<unsigned long long>(memory_alignment));
     if (use_tls13) {
         printf("specified app data record length: %zu bytes\n", app_data_record.size());
         printf("specified seq num: %llu\n", static_cast<unsigned long long>(seq_num));

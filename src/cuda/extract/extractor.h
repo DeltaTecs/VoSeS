@@ -1,6 +1,8 @@
 
 #include <cstdint>
 
+__host__ bool set_memory_alignment(uint64_t alignment);
+
 __host__ unsigned long long entropy_scan(const unsigned char* haystack, const uint64_t haystack_length, const uint64_t needle_length, const float entropyThreshold);
 
 __host__ unsigned long long tls12_master_secret_gcm_128_sha_256_scan(const unsigned char* haystack, const uint64_t haystack_length,

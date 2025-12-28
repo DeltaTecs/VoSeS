@@ -12,8 +12,23 @@
 #define TLS13_APP_TRAFFIC_SECRET_0_LEN_SHA384 48
 #define TLS13_AAD_LEN 5
 #define ENTROPY_SCAN_CANDIDATES_PER_THREAD 1
-// assume haystack memory to be aligned in sections of 4 bytes
-#define MEMORY_ALIGNMENT 1
+// default haystack alignment in bytes; configurable via CLI
+static uint64_t h_memory_alignment = 4;
+__device__ __constant__ uint64_t d_memory_alignment = 4;
+
+__host__ bool set_memory_alignment(uint64_t alignment) {
+    if (alignment == 0) {
+        printf("ERROR memory alignment must be greater than zero\n");
+        return false;
+    }
+    h_memory_alignment = alignment;
+    cudaError_t err = cudaMemcpyToSymbol(d_memory_alignment, &alignment, sizeof(alignment));
+    if (err != cudaSuccess) {
+        printf("cudaMemcpyToSymbol failed for d_memory_alignment: %s\n", cudaGetErrorString(err));
+        return false;
+    }
+    return true;
+}
 
 #define CUDA_CHECK(err, msg)            \
     do {                                       \
@@ -72,7 +87,7 @@ __global__ void tls12_master_secret_scan_gcm128_sha256_kernel(const unsigned cha
                                                             short ciphertext_length, const float entropyThreshold, unsigned long long* d_addr_found) {
 
     const unsigned long thread_index = blockIdx.x * blockDim.x + threadIdx.x;
-    const uint64_t percentile_index = (percentile * blockDim.x * gridDim.x + thread_index) * MEMORY_ALIGNMENT;
+    const uint64_t percentile_index = (percentile * blockDim.x * gridDim.x + thread_index) * d_memory_alignment;
 
     if (percentile_index + 1 + TLS_MASTER_SECRET_LEN > haystack_length) {
         return;
@@ -108,7 +123,7 @@ __global__ void tls12_master_secret_scan_gcm256_sha384_kernel(const unsigned cha
                                                             short ciphertext_length, const float entropyThreshold, unsigned long long* d_addr_found) {
 
     const unsigned long thread_index = blockIdx.x * blockDim.x + threadIdx.x;
-    const uint64_t percentile_index = (percentile * blockDim.x * gridDim.x + thread_index) * MEMORY_ALIGNMENT;
+    const uint64_t percentile_index = (percentile * blockDim.x * gridDim.x + thread_index) * d_memory_alignment;
 
     if (percentile_index + 1 + TLS_MASTER_SECRET_LEN > haystack_length) {
         return;
@@ -142,7 +157,7 @@ __global__ void tls13_app_traffic_secret_0_scan_gcm128_sha256_kernel(const unsig
                                                             short ciphertext_length, const float entropyThreshold, unsigned long long* d_addr_found) {
 
     const unsigned long thread_index = blockIdx.x * blockDim.x + threadIdx.x;
-    const uint64_t percentile_index = (percentile * blockDim.x * gridDim.x + thread_index) * MEMORY_ALIGNMENT;
+    const uint64_t percentile_index = (percentile * blockDim.x * gridDim.x + thread_index) * d_memory_alignment;
 
     if (percentile_index + 1 + TLS13_APP_TRAFFIC_SECRET_0_LEN_SHA256 > haystack_length) {
         return;
@@ -170,7 +185,7 @@ __global__ void tls13_app_traffic_secret_0_scan_gcm256_sha384_kernel(const unsig
                                                             short ciphertext_length, const float entropyThreshold, unsigned long long* d_addr_found) {
 
     const unsigned long thread_index = blockIdx.x * blockDim.x + threadIdx.x;
-    const uint64_t percentile_index = (percentile * blockDim.x * gridDim.x + thread_index) * MEMORY_ALIGNMENT;
+    const uint64_t percentile_index = (percentile * blockDim.x * gridDim.x + thread_index) * d_memory_alignment;
 
     if (percentile_index + 1 + TLS13_APP_TRAFFIC_SECRET_0_LEN_SHA384 > haystack_length) {
         return;
@@ -402,7 +417,7 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
     int max_threads_per_block = attr.maxThreadsPerBlock;
 
     // Define block and grid dimensions
-    uint64_t candidates_per_percentile = haystack_length / (100 * MEMORY_ALIGNMENT);
+    uint64_t candidates_per_percentile = haystack_length / (100 * h_memory_alignment);
     long num_blocks = (candidates_per_percentile + max_threads_per_block - 1) / max_threads_per_block;
 
     printf("#### launch parameters: min gid: %d, min block %d, max threads %d, num blocks: %ld, num threads: %d\n",
@@ -560,7 +575,7 @@ __host__ unsigned long long tls13_app_traffic_secret_0_helper(const unsigned cha
 
     int max_threads_per_block = attr.maxThreadsPerBlock;
 
-    uint64_t candidates_per_percentile = haystack_length / (100 * MEMORY_ALIGNMENT);
+    uint64_t candidates_per_percentile = haystack_length / (100 * h_memory_alignment);
     long num_blocks = (candidates_per_percentile + max_threads_per_block - 1) / max_threads_per_block;
     
     printf("#### launch parameters: min gid: %d, min block %d, max threads %d, num blocks: %ld, num threads: %d\n",

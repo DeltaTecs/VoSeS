@@ -41,6 +41,7 @@ voses.exe
   [--seq_num <int>]
   [--client]
   [--server]
+  [--memory-alignment|-ma <int>]
   [--entropy|-e <float>]
   [--entropy-scan|-es]
 ```
