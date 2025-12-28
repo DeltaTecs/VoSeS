@@ -239,16 +239,32 @@ int main(int argc, char* argv[]) {
         printf("specified app data record length: %zu bytes\n", app_data_record.size());
         printf("specified seq num: %llu\n", static_cast<unsigned long long>(seq_num));
 
+        unsigned char client_random_arr[32] = {0};
+        if (!client_random.empty()) {
+            if (client_random.length() != 64) {
+                std::cerr << "Error: --client_random must be 32-byte hex (64 hex characters)." << std::endl;
+                return 1;
+            }
+            std::vector<unsigned char> client_random_bytes = hexStringToByteArray(client_random);
+            if (client_random_bytes.size() != 32) {
+                std::cerr << "Error: Invalid hex value provided for client_random. Not 32 bytes." << std::endl;
+                return 1;
+            }
+            memcpy(client_random_arr, client_random_bytes.data(), 32);
+        }
+
         if (scan_client) {
             tls_app_traffic_secret_0_gcm_128_sha_256_scan(haystack.data(), haystack.size(),
                                                           app_data_record.data(),
                                                           static_cast<int>(app_data_record.size()),
+                                                          seq_num, client_random_arr,
                                                           entropy_threshold, true);
         }
         if (scan_server) {
             tls_app_traffic_secret_0_gcm_128_sha_256_scan(haystack.data(), haystack.size(),
                                                           app_data_record.data(),
                                                           static_cast<int>(app_data_record.size()),
+                                                          seq_num, client_random_arr,
                                                           entropy_threshold, false);
         }
     } else {
