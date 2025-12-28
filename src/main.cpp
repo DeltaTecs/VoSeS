@@ -286,10 +286,10 @@ int main(int argc, char* argv[]) {
 
         // Select and run the appropriate TLS scan based on the algorithm parameter.
         if (algorithm == "gcm_256_sha_384") {
-            tls_master_secret_gcm_256_sha_384_scan(haystack.data(), haystack.size(), client_random_arr, server_random_arr,
+            tls12_master_secret_gcm_256_sha_384_scan(haystack.data(), haystack.size(), client_random_arr, server_random_arr,
                                                    client_finished_bytes.data(), client_finished_bytes.size(), entropy_threshold);
         } else if (algorithm == "gcm_128_sha_256") {
-            tls_master_secret_gcm_128_sha_256_scan(haystack.data(), haystack.size(), client_random_arr, server_random_arr,
+            tls12_master_secret_gcm_128_sha_256_scan(haystack.data(), haystack.size(), client_random_arr, server_random_arr,
                                                    client_finished_bytes.data(), client_finished_bytes.size(), entropy_threshold);
         } else {
             std::cerr << "Error: Unsupported algorithm. Use 'gcm_256_sha_384' or 'gcm_128_sha_256'." << std::endl;
