@@ -111,8 +111,75 @@ __device__ void cuda_derive_tls12_keys_128(const unsigned char *d_master_secret,
     cuda_array_copy(d_server_iv, key_block + 36, 4);
 }
 
+// hkdf_expand_sha256 implements HKDF-Expand using HMAC-SHA256.
+__device__ void cuda_hkdf_expand_sha256(const unsigned char *d_secret, short secret_len,
+                          const unsigned char *d_info, short info_len,
+                          unsigned char *d_out, short out_len)
+{
+    const short hash_len = 32;
+    unsigned char t[hash_len];
+    short pos = 0;
+    unsigned char counter = 1;
+
+    if (info_len + 1 > 128) {
+        printf("ERROR hkdf_expand_sha256 info length too large\n");
+        return;
+    }
+
+    while (pos < out_len) {
+        unsigned char data[128];
+        short data_len = 0;
+
+        if (pos != 0) {
+            cuda_array_copy(data, t, hash_len);
+            data_len += hash_len;
+        }
+        if (data_len + info_len + 1 > 128) {
+            printf("ERROR hkdf_expand_sha256 info length too large\n");
+            return;
+        }
+        cuda_array_copy(data + data_len, d_info, info_len);
+        data_len += info_len;
+        data[data_len++] = counter;
+
+        cuda_hmac_sha256_128data(d_secret, secret_len, data, data_len, t);
+
+        short bytes_to_copy = (out_len - pos < hash_len) ? (out_len - pos) : hash_len;
+        cuda_array_copy(d_out + pos, t, bytes_to_copy);
+        pos += bytes_to_copy;
+        counter++;
+    }
+}
+
+// Build a TLS 1.3 HKDF label with an empty context.
+__device__ short cuda_build_hkdf_label(const char *label, short label_len, unsigned short length,
+                          unsigned char *d_out, short out_capacity)
+{
+    const char *tls13_prefix = "tls13 ";
+    const short prefix_len = 6;
+    const short full_label_len = prefix_len + label_len;
+    const short total_len = 2 + 1 + full_label_len + 1;
+    short pos = 0;
+
+    if (total_len > out_capacity) {
+        printf("ERROR hkdf_label buffer too small\n");
+        return 0;
+    }
+
+    d_out[pos++] = (unsigned char)((length >> 8) & 0xff);
+    d_out[pos++] = (unsigned char)(length & 0xff);
+    d_out[pos++] = (unsigned char)full_label_len;
+    cuda_array_copy(d_out + pos, (const unsigned char *)tls13_prefix, prefix_len);
+    pos += prefix_len;
+    cuda_array_copy(d_out + pos, (const unsigned char *)label, label_len);
+    pos += label_len;
+    d_out[pos++] = 0x00;
+
+    return total_len;
+}
+
 // This function implements the TLS 1.3 key expansion for AES-128-GCM-SHA256 application traffic secrets.
-// It derives a 16-byte write key and a 12-byte IV from the application traffic secret using applications of the HKDF.
+// It derives a 16-byte write key and a 12-byte IV from the application traffic secret using HKDF-Expand-Label.
 //   write_key: 16 bytes
 //   iv: 12 bytes
 __device__ void cuda_derive_tls13_key_128(const unsigned char *d_app_traffic_secret_0, short d_app_traffic_secret_len,
@@ -120,22 +187,35 @@ __device__ void cuda_derive_tls13_key_128(const unsigned char *d_app_traffic_sec
 {
     const short key_len = 16; // AES-128 key length
     const short iv_len = 12; // AES-128 IV length
-    const unsigned short hash_length = 32; // SHA-256 output length
 
-    // Prepare the hkdf_label: length || "tls13 " || label || ""
-    const char *key_label = "tls13 key";
-    const short key_label_len = 8;
-    const char *iv_label = "tls13 iv";
-    const short iv_label_len = 7;
-    const short hkdf_key_label_len = 2 + key_label_len; // length(2) + "tls13 " + label
+    const char *key_label = "key";
+    const short key_label_len = 3;
+    const char *iv_label = "iv";
+    const short iv_label_len = 2;
+    const short hkdf_key_label_len = 2 + 1 + 6 + key_label_len + 1; // len(2) + label_len(1) + "tls13 "(6) + label + context_len(1)
+    const short hkdf_iv_label_len = 2 + 1 + 6 + iv_label_len + 1; // len(2) + label_len(1) + "tls13 "(6) + label + context_len(1)
     unsigned char hkdf_key_label[hkdf_key_label_len];
-    const short hkdf_iv_label_len = 2 + iv_label_len; // length(2) + "tls13 " + label
     unsigned char hkdf_iv_label[hkdf_iv_label_len];
 
-    // Compute the aes key using P_SHA256 with the application traffic secret as the key
-    cuda_p_hash_sha256(d_app_traffic_secret_0, d_app_traffic_secret_len, hkdf_key_label, hkdf_key_label_len, d_key, key_len);
-    // Compute the iv using P_SHA256 with the application traffic secret as the key
-    cuda_p_hash_sha256(d_app_traffic_secret_0, d_app_traffic_secret_len, hkdf_iv_label, hkdf_iv_label_len, d_iv, iv_len);
+    short hkdf_key_label_actual_len = cuda_build_hkdf_label(key_label, key_label_len, key_len,
+                                                            hkdf_key_label, hkdf_key_label_len);
+    if (hkdf_key_label_actual_len == 0) {
+        printf("ERROR building hkdf key label\n");
+        return;
+    }
+    short hkdf_iv_label_actual_len = cuda_build_hkdf_label(iv_label, iv_label_len, iv_len,
+                                                           hkdf_iv_label, hkdf_iv_label_len);
+    if (hkdf_iv_label_actual_len == 0) {
+        printf("ERROR building hkdf iv label\n");
+        return;
+    }
+
+    cuda_hkdf_expand_sha256(d_app_traffic_secret_0, d_app_traffic_secret_len,
+                            hkdf_key_label, hkdf_key_label_actual_len,
+                            d_key, key_len);
+    cuda_hkdf_expand_sha256(d_app_traffic_secret_0, d_app_traffic_secret_len,
+                            hkdf_iv_label, hkdf_iv_label_actual_len,
+                            d_iv, iv_len);
 }
 
 // This function implements the TLS 1.2 key expansion for AES-256-GCM-SHA384.
