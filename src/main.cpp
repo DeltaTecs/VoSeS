@@ -54,6 +54,7 @@ void printUsage(const char* progName) {
               << "[--entropy-scan|-es]\n"
               << "       " << progName
               << " --app_data_record <path> --seq_num <int> "
+              << "--client_random|-cr <32-byte hex> "
               << "(--client|--server) "
               << "--haystack|-h <path>  (memory dump file path) "
               << "[--entropy|-e <float>] "
@@ -163,8 +164,13 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     bool use_tls13 = has_app_data_record;
-    if (use_tls13 && !scan_client && !scan_server) {
+    if (use_tls13 && !(scan_client ^ scan_server)) {
         std::cerr << "Error: TLS 1.3 mode requires --client or --server." << std::endl;
+        printUsage(argv[0]);
+        return 1;
+    }
+    if (use_tls13 && client_random.empty()) {
+        std::cerr << "Error: TLS 1.3 mode requires --client_random." << std::endl;
         printUsage(argv[0]);
         return 1;
     }
@@ -234,60 +240,53 @@ int main(int argc, char* argv[]) {
         scan_entropy(entropy_threshold, haystack);
     }
 
+
+    // Convert hex strings to byte arrays.
+    std::vector<unsigned char> client_random_bytes = hexStringToByteArray(client_random);
+    if (client_random_bytes.size() != 32) {
+        std::cerr << "Error: --client_random must be 32-byte hex (64 hex characters)." << std::endl;
+        return 1;
+    }
+    unsigned char client_random_arr[32];
+    memcpy(client_random_arr, client_random_bytes.data(), 32);
+
+    printf("specified client random: ");
+    for (char i = 0; i < 32; i++) {
+        printf("%02x", client_random_arr[i]);
+    }
+    printf("\n");
+
     printf("specified haystack file path: %s\n", haystack_path.c_str());
     if (use_tls13) {
         printf("specified app data record length: %zu bytes\n", app_data_record.size());
         printf("specified seq num: %llu\n", static_cast<unsigned long long>(seq_num));
 
-        unsigned char client_random_arr[32] = {0};
-        if (!client_random.empty()) {
-            if (client_random.length() != 64) {
-                std::cerr << "Error: --client_random must be 32-byte hex (64 hex characters)." << std::endl;
-                return 1;
-            }
-            std::vector<unsigned char> client_random_bytes = hexStringToByteArray(client_random);
-            if (client_random_bytes.size() != 32) {
-                std::cerr << "Error: Invalid hex value provided for client_random. Not 32 bytes." << std::endl;
-                return 1;
-            }
-            memcpy(client_random_arr, client_random_bytes.data(), 32);
-        }
-
-        if (scan_client) {
+        if (algorithm == "gcm_128_sha_256") {
             tls_app_traffic_secret_0_gcm_128_sha_256_scan(haystack.data(), haystack.size(),
                                                           app_data_record.data(),
                                                           static_cast<int>(app_data_record.size()),
                                                           seq_num, client_random_arr,
-                                                          entropy_threshold, true);
-        }
-        if (scan_server) {
-            tls_app_traffic_secret_0_gcm_128_sha_256_scan(haystack.data(), haystack.size(),
+                                                          entropy_threshold, scan_client);
+        } else if (algorithm == "gcm_256_sha_384") {
+            tls_app_traffic_secret_0_gcm_256_sha_384_scan(haystack.data(), haystack.size(),
                                                           app_data_record.data(),
                                                           static_cast<int>(app_data_record.size()),
                                                           seq_num, client_random_arr,
-                                                          entropy_threshold, false);
-        }
-    } else {
-        // Convert hex strings to byte arrays.
-        std::vector<unsigned char> client_random_bytes = hexStringToByteArray(client_random);
-        std::vector<unsigned char> server_random_bytes = hexStringToByteArray(server_random);
-        std::vector<unsigned char> client_finished_bytes = hexStringToByteArray(client_finished);
-
-        // Ensure that the client and server random arrays are correctly sized.
-        if (client_random_bytes.size() != 32 || server_random_bytes.size() != 32) {
-            std::cerr << "Error: Invalid hex value provided for client_random or server_random. Not 32 bytes." << std::endl;
+                                                          entropy_threshold, scan_client);
+        } else if (!algorithm.empty()) {
+            std::cerr << "Error: Unsupported algorithm. Use 'gcm_256_sha_384' or 'gcm_128_sha_256'." << std::endl;
             return 1;
         }
-        unsigned char client_random_arr[32];
-        unsigned char server_random_arr[32];
-        memcpy(client_random_arr, client_random_bytes.data(), 32);
-        memcpy(server_random_arr, server_random_bytes.data(), 32);
 
-        printf("specified client random: ");
-        for (char i = 0; i < 32; i++) {
-            printf("%02x", client_random_arr[i]);
+    } else {
+        std::vector<unsigned char> server_random_bytes = hexStringToByteArray(server_random);
+        std::vector<unsigned char> client_finished_bytes = hexStringToByteArray(client_finished);
+        if (server_random_bytes.size() != 32) {
+            std::cerr << "Error: --server_random must be 32-byte hex (64 hex characters)." << std::endl;
+            return 1;
         }
-        printf("\n");
+        unsigned char server_random_arr[32];
+        memcpy(server_random_arr, server_random_bytes.data(), 32);
         printf("specified server random: ");
         for (char i = 0; i < 32; i++) {
             printf("%02x", server_random_arr[i]);

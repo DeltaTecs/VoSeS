@@ -50,6 +50,9 @@ out/
 # ---- Project-specific generated output ----
 obj/
 
+# ---- production input
+data/
+
 # If 'voses' is a built binary in the repo root, ignore it.
 # (If it's a source directory/script, remove this line.)
 voses

@@ -47,7 +47,7 @@ voses.exe
 
 set entropy to a different filter value if you like. scan will show you how many 48 byte locations match your filter.
 
-If you pass both `--app_data_record` and `--seq_num`, the tool assumes TLS 1.3 and scans for the TLS 1.3 application traffic secret 0; in that mode you must supply `--client` and/or `--server`. Otherwise it runs TLS 1.2 scans.
+If you pass both `--app_data_record` and `--seq_num`, the tool assumes TLS 1.3 and scans for the TLS 1.3 application traffic secret 0; in that mode you must supply `--client_random` and `--client` and/or `--server`. Otherwise it runs TLS 1.2 scans.
 
 When a master secret matching your randoms and cipher text is found it will be printed in a format that can be read by wireshark as a master secret log file.
 

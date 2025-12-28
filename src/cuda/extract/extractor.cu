@@ -13,7 +13,7 @@
 #define TLS13_AAD_LEN 5
 #define ENTROPY_SCAN_CANDIDATES_PER_THREAD 1
 // assume haystack memory to be aligned in sections of 4 bytes
-#define MEMORY_ALIGNMENT 4
+#define MEMORY_ALIGNMENT 1
 
 #define CUDA_CHECK(err, msg)            \
     do {                                       \
@@ -580,11 +580,11 @@ __host__ unsigned long long tls13_app_traffic_secret_0_helper(const unsigned cha
     cudaEventCreate(&stop);
     cudaEventRecord(start);
 
-    printf("\rapp traffic secret scan 0%%");
     for (int i = 0; i < 100; i++) {
+        printf("\rapp traffic secret scan %d%%", i);
+        fflush(stdout);
         search_kernel<<<num_blocks, max_threads_per_block>>>(d_haystack, haystack_length, i,
             seq_num, d_aad, TLS13_AAD_LEN, d_chiphertext, ciphertext_len, entropyThreshold, d_addr_found);
-        printf("\rapp traffic secret scan %d%%", i);
         cudaDeviceSynchronize();
         err = cudaGetLastError();
         if (err != cudaSuccess) printf("Kernel launch error: %s\n", cudaGetErrorString(err));
@@ -616,6 +616,8 @@ __host__ unsigned long long tls13_app_traffic_secret_0_helper(const unsigned cha
 
     if (h_addr_found != 0 && h_addr_found + secret_len <= haystack_length) {
         print_tls13_app_traffic_secret_0(haystack + h_addr_found, secret_len, client_random, client, h_addr_found);
+    } else {
+        printf("No TLS 1.3 application traffic secret 0 found in haystack.\n");
     }
 
     return h_addr_found;
