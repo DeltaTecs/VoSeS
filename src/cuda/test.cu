@@ -15,6 +15,7 @@
 #include "crypto/kdf.h"
 #include "crypto/gcm128.h"
 #include "extract/tls-gcm-extract.h"
+#include "extract/extractor.h"
 #include "../host_util.h"
 
 __global__ void full_verify_gcm128(unsigned char* d_result, const unsigned char* d_master_secret, short master_secret_len,
@@ -956,6 +957,113 @@ bool test_full_gcm128() {
     return success;
 }
 
+bool test_tls13_app_traffic_secret_gcm128_sha256_match() {
+    // User provided case
+    std::string app_traffic_secret = "2f04cf52fa8ce49d2a95869b55057be3541bb2a82768630a01d9558609dcd0d0";
+    std::string aad_hex = "1703030057";
+    std::string ciphertext_hex = "3b4aab0d4d225d605a4252ca602a8dab3572f7682afed4cbded2eebdc20abfc77951401dcb2a9f526caea93daa6ff52863363f2fcd2fa4b5235abc4b82e35b147c33fae786c9dabf6453bb4a11dcdb4fde19df89c98f16";
+    uint64_t seq_num = 0;
+
+    std::vector<unsigned char> secret_bytes = hexStringToByteArray(app_traffic_secret);
+    std::vector<unsigned char> aad_bytes = hexStringToByteArray(aad_hex);
+    std::vector<unsigned char> ciphertext_bytes = hexStringToByteArray(ciphertext_hex);
+
+    unsigned char* d_result = nullptr;
+    unsigned char* d_secret = nullptr;
+    unsigned char* d_aad = nullptr;
+    unsigned char* d_chiphertext = nullptr;
+
+    cudaMalloc((void**)&d_result, sizeof(unsigned char));
+    cudaMalloc((void**)&d_secret, secret_bytes.size() * sizeof(unsigned char));
+    cudaMalloc((void**)&d_aad, aad_bytes.size() * sizeof(unsigned char));
+    cudaMalloc((void**)&d_chiphertext, ciphertext_bytes.size() * sizeof(unsigned char));
+
+    cudaMemcpy(d_secret, secret_bytes.data(), secret_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_aad, aad_bytes.data(), aad_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_chiphertext, ciphertext_bytes.data(), ciphertext_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    short secret_len = static_cast<short>(secret_bytes.size());
+    short aad_length = static_cast<short>(aad_bytes.size());
+    short ciphertext_length = static_cast<short>(ciphertext_bytes.size());
+
+    tls13_verify_gcm128<<<1, 1>>>(d_result, d_secret, secret_len,
+                                  seq_num, d_aad, aad_length,
+                                  d_chiphertext, ciphertext_length);
+    cudaDeviceSynchronize();
+
+    unsigned char h_result = 0;
+    cudaMemcpy(&h_result, d_result, sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    bool success = (h_result != 0);
+
+    if (!success) {
+        printf("TLS 1.3 app traffic secret GCM128 match test FAIL!\n");
+    } else {
+        printf("TLS 1.3 app traffic secret GCM128 match test pass\n");
+    }
+
+    cudaFree(d_result);
+    cudaFree(d_secret);
+    cudaFree(d_aad);
+    cudaFree(d_chiphertext);
+
+    return success;
+}
+
+bool test_tls13_app_traffic_secret_scan_user_case() {
+    // User provided case for scanning
+    std::string app_traffic_secret = "2f04cf52fa8ce49d2a95869b55057be3541bb2a82768630a01d9558609dcd0d0";
+    std::string aad_hex = "1703030057";
+    std::string ciphertext_hex = "3b4aab0d4d225d605a4252ca602a8dab3572f7682afed4cbded2eebdc20abfc77951401dcb2a9f526caea93daa6ff52863363f2fcd2fa4b5235abc4b82e35b147c33fae786c9dabf6453bb4a11dcdb4fde19df89c98f16";
+    uint64_t seq_num = 0;
+
+    std::vector<unsigned char> secret_bytes = hexStringToByteArray(app_traffic_secret);
+    std::vector<unsigned char> aad_bytes = hexStringToByteArray(aad_hex);
+    std::vector<unsigned char> ciphertext_bytes = hexStringToByteArray(ciphertext_hex);
+
+    // Combine AAD and Ciphertext for app_data_record
+    std::vector<unsigned char> app_data_record = aad_bytes;
+    app_data_record.insert(app_data_record.end(), ciphertext_bytes.begin(), ciphertext_bytes.end());
+
+    // 1MB haystack
+    uint64_t haystack_size = 1024 * 1024;
+    std::vector<unsigned char> haystack(haystack_size);
+    
+    // Fill with random data
+    for(size_t i=0; i<haystack_size; ++i) {
+        haystack[i] = rand() % 256;
+    }
+
+    // Insert secret at random position (avoid 0 as it is used as error code)
+    uint64_t secret_len = secret_bytes.size();
+    uint64_t max_pos = haystack_size - secret_len;
+    uint64_t secret_pos = (rand() % (max_pos - 1)) + 1;
+    
+    for(size_t i=0; i<secret_len; ++i) {
+        haystack[secret_pos + i] = secret_bytes[i];
+    }
+
+    unsigned char client_random[32] = {0}; // All zeros
+
+    set_memory_alignment(1);
+
+    unsigned long long found_pos = tls_app_traffic_secret_0_gcm_128_sha_256_scan(
+        haystack.data(), haystack_size,
+        app_data_record.data(), app_data_record.size(),
+        seq_num, client_random,
+        0.0f, // entropyThreshold
+        true // client
+    );
+
+    bool success = (found_pos == secret_pos);
+
+    if (!success) {
+        printf("TLS 1.3 app traffic secret scan user case test FAIL! Expected %lu, found %llu\n", secret_pos, found_pos);
+    } else {
+        printf("TLS 1.3 app traffic secret scan user case test pass. Found at %llu\n", found_pos);
+    }
+
+    return success;
+}
 
 
 bool run_tests() {
@@ -973,6 +1081,8 @@ bool run_tests() {
     bool suc8 = test_tls13_app_traffic_secret_gcm128_sha256();
     bool suc9 = test_tls13_app_traffic_secret_gcm256_sha384();
     bool suc10 = test_full_gcm128();
+    bool suc11 = test_tls13_app_traffic_secret_gcm128_sha256_match();
+    bool suc12 = test_tls13_app_traffic_secret_scan_user_case();
     return suc0 && 
            suc1 && 
            suc2 && 
@@ -983,5 +1093,7 @@ bool run_tests() {
            suc7 &&
            suc8 &&
            suc9 &&
-           suc10;
+           suc10 &&
+           suc11 &&
+           suc12;
 }
