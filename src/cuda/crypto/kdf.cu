@@ -111,6 +111,33 @@ __device__ void cuda_derive_tls12_keys_128(const unsigned char *d_master_secret,
     cuda_array_copy(d_server_iv, key_block + 36, 4);
 }
 
+// This function implements the TLS 1.3 key expansion for AES-128-GCM-SHA256 application traffic secrets.
+// It derives a 16-byte write key and a 12-byte IV from the application traffic secret using applications of the HKDF.
+//   write_key: 16 bytes
+//   iv: 12 bytes
+__device__ void cuda_derive_tls13_key_128(const unsigned char *d_app_traffic_secret_0, short d_app_traffic_secret_len,
+                              unsigned char *d_key, unsigned char *d_iv)
+{
+    const short key_len = 16; // AES-128 key length
+    const short iv_len = 12; // AES-128 IV length
+    const unsigned short hash_length = 32; // SHA-256 output length
+
+    // Prepare the hkdf_label: length || "tls13 " || label || ""
+    const char *key_label = "tls13 key";
+    const short key_label_len = 8;
+    const char *iv_label = "tls13 iv";
+    const short iv_label_len = 7;
+    const short hkdf_key_label_len = 2 + key_label_len; // length(2) + "tls13 " + label
+    unsigned char hkdf_key_label[hkdf_key_label_len];
+    const short hkdf_iv_label_len = 2 + iv_label_len; // length(2) + "tls13 " + label
+    unsigned char hkdf_iv_label[hkdf_iv_label_len];
+
+    // Compute the aes key using P_SHA256 with the application traffic secret as the key
+    cuda_p_hash_sha256(d_app_traffic_secret_0, d_app_traffic_secret_len, hkdf_key_label, hkdf_key_label_len, d_key, key_len);
+    // Compute the iv using P_SHA256 with the application traffic secret as the key
+    cuda_p_hash_sha256(d_app_traffic_secret_0, d_app_traffic_secret_len, hkdf_iv_label, hkdf_iv_label_len, d_iv, iv_len);
+}
+
 // This function implements the TLS 1.2 key expansion for AES-256-GCM-SHA384.
 // It derives a 72-byte key block from the master secret, server random, and client random,
 // then partitions it as follows:

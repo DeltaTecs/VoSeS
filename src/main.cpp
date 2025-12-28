@@ -51,6 +51,12 @@ void printUsage(const char* progName) {
               << "[--app_data_record <path>] "
               << "[--seq_num <int>] "
               << "[--entropy|-e <float>] "
+              << "[--entropy-scan|-es]\n"
+              << "       " << progName
+              << " --app_data_record <path> --seq_num <int> "
+              << "(--client|--server) "
+              << "--haystack|-h <path>  (memory dump file path) "
+              << "[--entropy|-e <float>] "
               << "[--entropy-scan|-es]" << std::endl;
 }
 
@@ -64,6 +70,8 @@ int main(int argc, char* argv[]) {
     std::string app_data_record_path;
     uint64_t seq_num = 0;
     bool has_seq_num = false;
+    bool scan_client = false;
+    bool scan_server = false;
     float entropy_threshold = 5.0f; // Default entropy threshold.
     bool run_entropy_scan = false;
 
@@ -135,6 +143,10 @@ int main(int argc, char* argv[]) {
                 printUsage(argv[0]);
                 return 1;
             }
+        } else if (arg == "--client") {
+            scan_client = true;
+        } else if (arg == "--server") {
+            scan_server = true;
         } else if (arg == "--entropy-scan" || arg == "-es") {
             run_entropy_scan = true;
         } else {
@@ -144,33 +156,50 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Validate required arguments.
-    if (client_random.empty() || server_random.empty() || client_finished.empty() ||
-        algorithm.empty() || haystack_path.empty()) {
-        std::cerr << "Error: Missing required arguments." << std::endl;
-        printUsage(argv[0]);
-        return 1;
-    }
     bool has_app_data_record = !app_data_record_path.empty();
     if (has_app_data_record != has_seq_num) {
         std::cerr << "Error: --app_data_record and --seq_num must be provided together." << std::endl;
         printUsage(argv[0]);
         return 1;
     }
+    bool use_tls13 = has_app_data_record;
+    if (use_tls13 && !scan_client && !scan_server) {
+        std::cerr << "Error: TLS 1.3 mode requires --client or --server." << std::endl;
+        printUsage(argv[0]);
+        return 1;
+    }
 
-    // Validate hex string lengths.
-    if (client_random.length() != 64) { // 32 bytes = 64 hex characters.
-        std::cerr << "Error: --client_random must be 32-byte hex (64 hex characters)." << std::endl;
-        return 1;
+    // Validate required arguments.
+    if (use_tls13) {
+        if (haystack_path.empty()) {
+            std::cerr << "Error: Missing required arguments." << std::endl;
+            printUsage(argv[0]);
+            return 1;
+        }
+    } else {
+        if (client_random.empty() || server_random.empty() || client_finished.empty() ||
+            algorithm.empty() || haystack_path.empty()) {
+            std::cerr << "Error: Missing required arguments." << std::endl;
+            printUsage(argv[0]);
+            return 1;
+        }
     }
-    if (server_random.length() != 64) {
-        std::cerr << "Error: --server_random must be 32-byte hex (64 hex characters)." << std::endl;
-        return 1;
-    }
-    // Ensure client_finished does not exceed 61 bytes (122 hex characters).
-    if (client_finished.length() > 122) {
-        std::cerr << "Error: --client_finished must be a hex string with a maximum of 61 bytes (122 hex characters)." << std::endl;
-        return 1;
+
+    if (!use_tls13) {
+        // Validate hex string lengths.
+        if (client_random.length() != 64) { // 32 bytes = 64 hex characters.
+            std::cerr << "Error: --client_random must be 32-byte hex (64 hex characters)." << std::endl;
+            return 1;
+        }
+        if (server_random.length() != 64) {
+            std::cerr << "Error: --server_random must be 32-byte hex (64 hex characters)." << std::endl;
+            return 1;
+        }
+        // Ensure client_finished does not exceed 61 bytes (122 hex characters).
+        if (client_finished.length() > 122) {
+            std::cerr << "Error: --client_finished must be a hex string with a maximum of 61 bytes (122 hex characters)." << std::endl;
+            return 1;
+        }
     }
 
     // Load the haystack file.
@@ -200,54 +229,72 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
-    // Convert hex strings to byte arrays.
-    std::vector<unsigned char> client_random_bytes = hexStringToByteArray(client_random);
-    std::vector<unsigned char> server_random_bytes = hexStringToByteArray(server_random);
-    std::vector<unsigned char> client_finished_bytes = hexStringToByteArray(client_finished);
-
-    // Ensure that the client and server random arrays are correctly sized.
-    if (client_random_bytes.size() != 32 || server_random_bytes.size() != 32) {
-        std::cerr << "Error: Invalid hex value provided for client_random or server_random. Not 32 bytes." << std::endl;
-        return 1;
-    }
-    unsigned char client_random_arr[32];
-    unsigned char server_random_arr[32];
-    memcpy(client_random_arr, client_random_bytes.data(), 32);
-    memcpy(server_random_arr, server_random_bytes.data(), 32);
-
     // If the entropy-scan flag is set, run scan_entropy before other scans.
     if (run_entropy_scan) {
         scan_entropy(entropy_threshold, haystack);
     }
 
     printf("specified haystack file path: %s\n", haystack_path.c_str());
-    printf("specified client random: ");
-    for (char i = 0; i < 32; i++) {
-        printf("%02x", client_random_arr[i]);
-    }
-    printf("\n");
-    printf("specified server random: ");
-    for (char i = 0; i < 32; i++) {
-        printf("%02x", server_random_arr[i]);
-    }
-    printf("\n");
-    printf("specified client finished message: ");
-    for (char i = 0; i < client_finished_bytes.size(); i++) {
-        printf("%02x", client_finished_bytes.data()[i]);
-    }
-    printf("\n");
-    printf("specified algorithm: %s\n", algorithm.c_str());
+    if (use_tls13) {
+        printf("specified app data record length: %zu bytes\n", app_data_record.size());
+        printf("specified seq num: %llu\n", static_cast<unsigned long long>(seq_num));
 
-    // Select and run the appropriate TLS scan based on the algorithm parameter.
-    if (algorithm == "gcm_256_sha_384") {
-        tls_master_secret_gcm_256_sha_384_scan(haystack.data(), haystack.size(), client_random_arr, server_random_arr,
-                                               client_finished_bytes.data(), client_finished_bytes.size(), entropy_threshold);
-    } else if (algorithm == "gcm_128_sha_256") {
-        tls_master_secret_gcm_128_sha_256_scan(haystack.data(), haystack.size(), client_random_arr, server_random_arr,
-                                               client_finished_bytes.data(), client_finished_bytes.size(), entropy_threshold);
+        if (scan_client) {
+            tls_app_traffic_secret_0_gcm_128_sha_256_scan(haystack.data(), haystack.size(),
+                                                          app_data_record.data(),
+                                                          static_cast<int>(app_data_record.size()),
+                                                          entropy_threshold, true);
+        }
+        if (scan_server) {
+            tls_app_traffic_secret_0_gcm_128_sha_256_scan(haystack.data(), haystack.size(),
+                                                          app_data_record.data(),
+                                                          static_cast<int>(app_data_record.size()),
+                                                          entropy_threshold, false);
+        }
     } else {
-        std::cerr << "Error: Unsupported algorithm. Use 'gcm_256_sha_384' or 'gcm_128_sha_256'." << std::endl;
-        return 1;
+        // Convert hex strings to byte arrays.
+        std::vector<unsigned char> client_random_bytes = hexStringToByteArray(client_random);
+        std::vector<unsigned char> server_random_bytes = hexStringToByteArray(server_random);
+        std::vector<unsigned char> client_finished_bytes = hexStringToByteArray(client_finished);
+
+        // Ensure that the client and server random arrays are correctly sized.
+        if (client_random_bytes.size() != 32 || server_random_bytes.size() != 32) {
+            std::cerr << "Error: Invalid hex value provided for client_random or server_random. Not 32 bytes." << std::endl;
+            return 1;
+        }
+        unsigned char client_random_arr[32];
+        unsigned char server_random_arr[32];
+        memcpy(client_random_arr, client_random_bytes.data(), 32);
+        memcpy(server_random_arr, server_random_bytes.data(), 32);
+
+        printf("specified client random: ");
+        for (char i = 0; i < 32; i++) {
+            printf("%02x", client_random_arr[i]);
+        }
+        printf("\n");
+        printf("specified server random: ");
+        for (char i = 0; i < 32; i++) {
+            printf("%02x", server_random_arr[i]);
+        }
+        printf("\n");
+        printf("specified client finished message: ");
+        for (char i = 0; i < client_finished_bytes.size(); i++) {
+            printf("%02x", client_finished_bytes.data()[i]);
+        }
+        printf("\n");
+        printf("specified algorithm: %s\n", algorithm.c_str());
+
+        // Select and run the appropriate TLS scan based on the algorithm parameter.
+        if (algorithm == "gcm_256_sha_384") {
+            tls_master_secret_gcm_256_sha_384_scan(haystack.data(), haystack.size(), client_random_arr, server_random_arr,
+                                                   client_finished_bytes.data(), client_finished_bytes.size(), entropy_threshold);
+        } else if (algorithm == "gcm_128_sha_256") {
+            tls_master_secret_gcm_128_sha_256_scan(haystack.data(), haystack.size(), client_random_arr, server_random_arr,
+                                                   client_finished_bytes.data(), client_finished_bytes.size(), entropy_threshold);
+        } else {
+            std::cerr << "Error: Unsupported algorithm. Use 'gcm_256_sha_384' or 'gcm_128_sha_256'." << std::endl;
+            return 1;
+        }
     }
 
     return 0;

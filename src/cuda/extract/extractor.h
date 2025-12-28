@@ -12,3 +12,7 @@ __host__ unsigned long long tls_master_secret_gcm_256_sha_384_scan(const unsigne
                                                                    unsigned char client_random[32], unsigned char server_random[32],
                                                                    unsigned char* client_finished_msg, int client_finished_length,
                                                                    const float entropyThreshold);
+
+__host__ unsigned long long tls_app_traffic_secret_0_gcm_128_sha_256_scan(const unsigned char* haystack, const uint64_t haystack_length,
+                                                                   unsigned char* app_data_record, int app_data_record_length,
+                                                                   const float entropyThreshold, const bool client);

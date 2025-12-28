@@ -408,23 +408,36 @@ __host__ unsigned long long tls_master_secret_helper(const unsigned char* haysta
 }
 
 
+// TLS 1.2 Master Secret Scan GCM 256 SHA 384
 __host__ unsigned long long tls_master_secret_gcm_128_sha_256_scan(const unsigned char* haystack, const uint64_t haystack_length,
                                                                    unsigned char client_random[32], unsigned char server_random[32],
                                                                    unsigned char* client_finished_msg, int client_finished_length,
                                                                    const float entropyThreshold) {
 
-    printf("initiating master secret scan (GCM 128, SHA 256) on %lu MB haystack with entropy threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
+    printf("initiating TLS 1.2 master secret scan (GCM 128, SHA 256) on %lu MB haystack with entropy threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
 
     return tls_master_secret_helper(haystack, haystack_length, client_random, server_random, client_finished_msg, client_finished_length, entropyThreshold, tls_master_secret_scan_gcm128_sha256_kernel);
 }
 
+// TLS 1.2 Master Secret Scan GCM 256 SHA 384
 __host__ unsigned long long tls_master_secret_gcm_256_sha_384_scan(const unsigned char* haystack, const uint64_t haystack_length,
                                                                    unsigned char client_random[32], unsigned char server_random[32],
                                                                    unsigned char* client_finished_msg, int client_finished_length,
                                                                    const float entropyThreshold) {
 
-    printf("initiating master secret scan (GCM 256, SHA 384) on %lu MB haystack with entropy threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
+    printf("initiating TLS 1.2 master secret scan (GCM 256, SHA 384) on %lu MB haystack with entropy threshold %f\n", haystack_length / (1000*1000), entropyThreshold);
 
     return tls_master_secret_helper(haystack, haystack_length, client_random, server_random, client_finished_msg, client_finished_length, entropyThreshold, tls_master_secret_scan_gcm256_sha384_kernel);
+}
+
+// TLS 1.3 Application Traffic Secret 0 Scan GCM 128 SHA 256
+__host__ unsigned long long tls_app_traffic_secret_0_gcm_128_sha_256_scan(const unsigned char* haystack, const uint64_t haystack_length,
+                                                                   unsigned char* app_data_record, int app_data_record_length,
+                                                                   const float entropyThreshold, const bool client) {
+
+    printf("initiating TLS 1.3 %s_application_traffic_secret_0 scan (GCM 128, SHA 256) on %lu MB haystack with entropy threshold %f\n", client ? "client" : "server", haystack_length / (1000*1000), entropyThreshold);
+                                        
+    // TODO
+    return 0;
 }
 
