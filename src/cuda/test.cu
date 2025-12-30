@@ -1033,7 +1033,7 @@ bool test_tls13_app_traffic_secret_scan_user_case() {
         haystack[i] = rand() % 256;
     }
 
-    // Insert secret at random position (avoid 0 as it is used as error code)
+    // Insert secret at random position.
     uint64_t secret_len = secret_bytes.size();
     uint64_t max_pos = haystack_size - secret_len;
     uint64_t secret_pos = (rand() % (max_pos - 1)) + 1;

@@ -33,6 +33,36 @@ std::vector<unsigned char> loadFileBytes(const std::string& filename) {
     return buffer;
 }
 
+constexpr size_t kTls12MasterSecretLen = 48;
+constexpr size_t kTls13AppTrafficSecret0LenSha256 = 32;
+constexpr size_t kTls13AppTrafficSecret0LenSha384 = 48;
+
+std::string bytesToHex(const unsigned char* bytes, size_t len) {
+    std::ostringstream oss;
+    oss << std::hex << std::nouppercase << std::setfill('0');
+    for (size_t i = 0; i < len; ++i) {
+        oss << std::setw(2) << static_cast<int>(bytes[i]);
+    }
+    return oss.str();
+}
+
+bool appendKeyLogLine(const std::string& path, const std::string& label,
+                      const unsigned char* client_random, size_t client_random_len,
+                      const unsigned char* secret, size_t secret_len) {
+    std::ofstream out(path, std::ios::app);
+    if (!out) {
+        std::cerr << "Error: Failed to open key log file: " << path << std::endl;
+        return false;
+    }
+    out << label << " " << bytesToHex(client_random, client_random_len) << " "
+        << bytesToHex(secret, secret_len) << "\n";
+    if (!out) {
+        std::cerr << "Error: Failed to write key log file: " << path << std::endl;
+        return false;
+    }
+    return true;
+}
+
 void scan_entropy(float threshold, std::vector<unsigned char> haystack) {
 
     unsigned long long h_entropy_candidates = entropy_scan(haystack.data(), haystack.size(), 48, threshold);
@@ -48,6 +78,7 @@ void printUsage(const char* progName) {
               << "--client_finished|-cf <hex, max 61 bytes> "
               << "--algorithm|-a <gcm_256_sha_384|gcm_128_sha_256> "
               << "--haystack|-h <path>  (memory dump file path) "
+              << "[--key-log <path>] "
               << "[--app_data_record <path>] "
               << "[--seq_num <int>] "
               << "[--memory-alignment|-ma <int>] "
@@ -58,6 +89,7 @@ void printUsage(const char* progName) {
               << "--client_random|-cr <32-byte hex> "
               << "(--client|--server) "
               << "--haystack|-h <path>  (memory dump file path) "
+              << "[--key-log <path>] "
               << "[--memory-alignment|-ma <int>] "
               << "[--entropy|-e <float>] "
               << "[--entropy-scan|-es]" << std::endl;
@@ -70,6 +102,7 @@ int main(int argc, char* argv[]) {
     std::string client_finished;
     std::string algorithm;
     std::string haystack_path;
+    std::string key_log_path;
     std::string app_data_record_path;
     uint64_t seq_num = 0;
     bool has_seq_num = false;
@@ -117,6 +150,14 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--haystack" || arg == "-h") {
             if (i + 1 < argc) {
                 haystack_path = argv[++i];
+            } else {
+                std::cerr << "Error: Missing value for " << arg << std::endl;
+                printUsage(argv[0]);
+                return 1;
+            }
+        } else if (arg == "--key-log") {
+            if (i + 1 < argc) {
+                key_log_path = argv[++i];
             } else {
                 std::cerr << "Error: Missing value for " << arg << std::endl;
                 printUsage(argv[0]);
@@ -282,23 +323,41 @@ int main(int argc, char* argv[]) {
         printf("specified app data record length: %zu bytes\n", app_data_record.size());
         printf("specified seq num: %llu\n", static_cast<unsigned long long>(seq_num));
 
+        unsigned long long key_location = k_addr_not_found;
+        size_t key_length = 0;
+        std::string key_label;
         if (algorithm == "gcm_128_sha_256") {
-            tls_app_traffic_secret_0_gcm_128_sha_256_scan(haystack.data(), haystack.size(),
-                                                          app_data_record.data(),
-                                                          static_cast<int>(app_data_record.size()),
-                                                          seq_num, client_random_arr,
-                                                          entropy_threshold, scan_client);
+            key_length = kTls13AppTrafficSecret0LenSha256;
+            key_label = scan_client ? "CLIENT_TRAFFIC_SECRET_0" : "SERVER_TRAFFIC_SECRET_0";
+            key_location = tls_app_traffic_secret_0_gcm_128_sha_256_scan(haystack.data(), haystack.size(),
+                                                                         app_data_record.data(),
+                                                                         static_cast<int>(app_data_record.size()),
+                                                                         seq_num, client_random_arr,
+                                                                         entropy_threshold, scan_client);
         } else if (algorithm == "gcm_256_sha_384") {
-            tls_app_traffic_secret_0_gcm_256_sha_384_scan(haystack.data(), haystack.size(),
-                                                          app_data_record.data(),
-                                                          static_cast<int>(app_data_record.size()),
-                                                          seq_num, client_random_arr,
-                                                          entropy_threshold, scan_client);
+            key_length = kTls13AppTrafficSecret0LenSha384;
+            key_label = scan_client ? "CLIENT_TRAFFIC_SECRET_0" : "SERVER_TRAFFIC_SECRET_0";
+            key_location = tls_app_traffic_secret_0_gcm_256_sha_384_scan(haystack.data(), haystack.size(),
+                                                                         app_data_record.data(),
+                                                                         static_cast<int>(app_data_record.size()),
+                                                                         seq_num, client_random_arr,
+                                                                         entropy_threshold, scan_client);
         } else if (!algorithm.empty()) {
             std::cerr << "Error: Unsupported algorithm. Use 'gcm_256_sha_384' or 'gcm_128_sha_256'." << std::endl;
             return 1;
         }
 
+        if (!key_log_path.empty() && key_length > 0 && key_location != k_addr_not_found) {
+            size_t key_offset = static_cast<size_t>(key_location);
+            if (key_offset + key_length > haystack.size()) {
+                std::cerr << "Error: Key location is out of bounds for the haystack." << std::endl;
+                return 1;
+            }
+            if (!appendKeyLogLine(key_log_path, key_label, client_random_arr, 32,
+                                  haystack.data() + key_offset, key_length)) {
+                return 1;
+            }
+        }
     } else {
         std::vector<unsigned char> server_random_bytes = hexStringToByteArray(server_random);
         std::vector<unsigned char> client_finished_bytes = hexStringToByteArray(client_finished);
@@ -321,15 +380,30 @@ int main(int argc, char* argv[]) {
         printf("specified algorithm: %s\n", algorithm.c_str());
 
         // Select and run the appropriate TLS scan based on the algorithm parameter.
+        unsigned long long key_location = k_addr_not_found;
+        size_t key_length = kTls12MasterSecretLen;
+        std::string key_label = "CLIENT_RANDOM";
         if (algorithm == "gcm_256_sha_384") {
-            tls12_master_secret_gcm_256_sha_384_scan(haystack.data(), haystack.size(), client_random_arr, server_random_arr,
-                                                   client_finished_bytes.data(), client_finished_bytes.size(), entropy_threshold);
+            key_location = tls12_master_secret_gcm_256_sha_384_scan(haystack.data(), haystack.size(), client_random_arr, server_random_arr,
+                                                                    client_finished_bytes.data(), client_finished_bytes.size(), entropy_threshold);
         } else if (algorithm == "gcm_128_sha_256") {
-            tls12_master_secret_gcm_128_sha_256_scan(haystack.data(), haystack.size(), client_random_arr, server_random_arr,
-                                                   client_finished_bytes.data(), client_finished_bytes.size(), entropy_threshold);
+            key_location = tls12_master_secret_gcm_128_sha_256_scan(haystack.data(), haystack.size(), client_random_arr, server_random_arr,
+                                                                    client_finished_bytes.data(), client_finished_bytes.size(), entropy_threshold);
         } else {
             std::cerr << "Error: Unsupported algorithm. Use 'gcm_256_sha_384' or 'gcm_128_sha_256'." << std::endl;
             return 1;
+        }
+
+        if (!key_log_path.empty() && key_location != k_addr_not_found) {
+            size_t key_offset = static_cast<size_t>(key_location);
+            if (key_offset + key_length > haystack.size()) {
+                std::cerr << "Error: Key location is out of bounds for the haystack." << std::endl;
+                return 1;
+            }
+            if (!appendKeyLogLine(key_log_path, key_label, client_random_arr, 32,
+                                  haystack.data() + key_offset, key_length)) {
+                return 1;
+            }
         }
     }
 

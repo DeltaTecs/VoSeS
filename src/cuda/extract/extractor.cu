@@ -330,7 +330,7 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
 
     if (client_finished_msg[0] != 0x16) {
         printf("ERROR did not receive a finished message!\n");
-        return 0;
+        return k_addr_not_found;
     }
 
     bool dtls = client_finished_msg[1] == 0xFE && client_finished_msg[2] == 0xFD;
@@ -367,7 +367,7 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
     unsigned char* ciphertext_bytes = (unsigned char*) malloc(ciphertext_len);
     memcpy(ciphertext_bytes, client_finished_msg + AAD_LENGTH + (dtls ? 8 : 0), ciphertext_len);
 
-    unsigned long long h_addr_found = 0;
+    unsigned long long h_addr_found = k_addr_not_found;
 
     unsigned char *d_haystack = nullptr;
     unsigned char* d_client_random = nullptr;
@@ -402,7 +402,7 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
     err = cudaMemcpy(d_chiphertext, ciphertext_bytes, ciphertext_len * sizeof(unsigned char), cudaMemcpyHostToDevice);
     CUDA_CHECK(err, "cudaMemcpy failed for d_chiphertext");
 
-    err = cudaMemset(d_addr_found, 0x00, sizeof(unsigned long long));
+    err = cudaMemset(d_addr_found, 0xFF, sizeof(unsigned long long));
     CUDA_CHECK(err, "cudaMemset failed for d_addr_found");
 
     
@@ -450,7 +450,7 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
         // check if secret found already
         err = cudaMemcpy(&h_addr_found, d_addr_found, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
         CUDA_CHECK(err, "cudaMemcpy failed for d_addr_found to host");
-        if (h_addr_found != 0) break;
+        if (h_addr_found != k_addr_not_found) break;
     }
 
     // Record stop time
@@ -516,7 +516,7 @@ __host__ unsigned long long tls13_app_traffic_secret_0_helper(const unsigned cha
 
     if (app_data_record_length < TLS13_AAD_LEN) {
         printf("ERROR app_data_record too short for TLS 1.3 header.\n");
-        return 0;
+        return k_addr_not_found;
     }
 
     unsigned char* aad_bytes = (unsigned char*) malloc(TLS13_AAD_LEN);
@@ -534,13 +534,13 @@ __host__ unsigned long long tls13_app_traffic_secret_0_helper(const unsigned cha
     if (ciphertext_len <= 0) {
         printf("ERROR app_data_record missing ciphertext.\n");
         free(aad_bytes);
-        return 0;
+        return k_addr_not_found;
     }
 
     unsigned char* ciphertext_bytes = (unsigned char*) malloc(ciphertext_len);
     memcpy(ciphertext_bytes, app_data_record + TLS13_AAD_LEN, ciphertext_len);
 
-    unsigned long long h_addr_found = 0;
+    unsigned long long h_addr_found = k_addr_not_found;
 
     unsigned char *d_haystack = nullptr;
     unsigned char* d_aad = nullptr;
@@ -564,7 +564,7 @@ __host__ unsigned long long tls13_app_traffic_secret_0_helper(const unsigned cha
     err = cudaMemcpy(d_chiphertext, ciphertext_bytes, ciphertext_len * sizeof(unsigned char), cudaMemcpyHostToDevice);
     CUDA_CHECK(err, "cudaMemcpy failed for d_chiphertext");
 
-    err = cudaMemset(d_addr_found, 0x00, sizeof(unsigned long long));
+    err = cudaMemset(d_addr_found, 0xFF, sizeof(unsigned long long));
     CUDA_CHECK(err, "cudaMemset failed for d_addr_found");
 
     cudaFuncAttributes attr;
@@ -606,7 +606,7 @@ __host__ unsigned long long tls13_app_traffic_secret_0_helper(const unsigned cha
 
         err = cudaMemcpy(&h_addr_found, d_addr_found, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
         CUDA_CHECK(err, "cudaMemcpy failed for d_addr_found to host");
-        if (h_addr_found != 0) break;
+        if (h_addr_found != k_addr_not_found) break;
     }
 
     cudaEventRecord(stop);
@@ -629,7 +629,7 @@ __host__ unsigned long long tls13_app_traffic_secret_0_helper(const unsigned cha
     free(ciphertext_bytes);
     free(aad_bytes);
 
-    if (h_addr_found != 0 && h_addr_found + secret_len <= haystack_length) {
+    if (h_addr_found != k_addr_not_found && h_addr_found + secret_len <= haystack_length) {
         print_tls13_app_traffic_secret_0(haystack + h_addr_found, secret_len, client_random, client, h_addr_found);
     } else {
         printf("No TLS 1.3 application traffic secret 0 found in haystack.\n");

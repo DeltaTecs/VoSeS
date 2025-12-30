@@ -1,6 +1,8 @@
 
 #include <cstdint>
 
+constexpr unsigned long long k_addr_not_found = ~0ULL;
+
 __host__ bool set_memory_alignment(uint64_t alignment);
 
 __host__ unsigned long long entropy_scan(const unsigned char* haystack, const uint64_t haystack_length, const uint64_t needle_length, const float entropyThreshold);
