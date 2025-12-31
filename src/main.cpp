@@ -108,7 +108,7 @@ int main(int argc, char* argv[]) {
     bool has_seq_num = false;
     bool scan_client = false;
     bool scan_server = false;
-    float entropy_threshold = 5.0f; // Default entropy threshold.
+    float entropy_threshold = 4.4f; // Default entropy threshold.
     uint64_t memory_alignment = 4;
     bool run_entropy_scan = false;
 

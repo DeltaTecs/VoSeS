@@ -175,6 +175,7 @@ __global__ void tls13_app_traffic_secret_0_scan_gcm128_sha256_kernel(const unsig
                                                                  seq_num, d_aad, aad_length,
                                                                  d_chiphertext, ciphertext_length);
     if (isMatch) {
+        printf("\nMatch has entropy %f\n", entropy);
         *d_addr_found = percentile_index;
     }
 }
@@ -203,6 +204,7 @@ __global__ void tls13_app_traffic_secret_0_scan_gcm256_sha384_kernel(const unsig
                                                                  seq_num, d_aad, aad_length,
                                                                  d_chiphertext, ciphertext_length);
     if (isMatch) {
+        printf("\nMatch has entropy %f\n", entropy);
         *d_addr_found = percentile_index;
     }
 }
