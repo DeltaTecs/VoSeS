@@ -346,6 +346,7 @@ def run_voses(voses_path, dump_path, app_data, seq_num, client_random, algorithm
     pre_size = os.path.getsize(keylog_path) if os.path.exists(keylog_path) else 0
     args = [
         voses_path,
+        "--tls13",
         "--app_data_record",
         app_path,
         "--seq_num",

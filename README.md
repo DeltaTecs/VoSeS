@@ -31,24 +31,33 @@ Run Tests:
 
 Run:
 ```
-voses.exe
+voses.exe --tls12
   --client_random|-cr <32-byte hex>
   --server_random|-sr <32-byte hex>
   --client_finished|-cf <hex, max 61 bytes>
   --algorithm|-a <gcm_256_sha_384|gcm_128_sha_256>
   --haystack|-h <path>  (memory dump file path)
-  [--app_data_record <path>]
-  [--seq_num <int>]
-  [--client]
-  [--server]
   [--memory-alignment|-ma <int>]
   [--entropy|-e <float>]
   [--entropy-scan|-es]
+
+voses.exe --tls13
+  --app_data_record <path>
+  --seq_num <int>
+  --client_random|-cr <32-byte hex>
+  (--client|--server)
+  --algorithm|-a <gcm_256_sha_384|gcm_128_sha_256>
+  --haystack|-h <path>  (memory dump file path)
+  [--memory-alignment|-ma <int>]
+  [--entropy|-e <float>]
+  [--entropy-scan|-es]
+
+voses.exe --quic  (not implemented yet)
 ```
 
 set entropy to a different filter value if you like. scan will show you how many 48 byte locations match your filter.
 
-If you pass both `--app_data_record` and `--seq_num`, the tool assumes TLS 1.3 and scans for the TLS 1.3 application traffic secret 0; in that mode you must supply `--client_random` and `--client` and/or `--server`. Otherwise it runs TLS 1.2 scans.
+Use `--tls13` with `--app_data_record` and `--seq_num` to scan for TLS 1.3 application traffic secret 0; in that mode you must supply `--client_random` and `--client` or `--server`. Use `--tls12` for TLS 1.2 master secret scans. `--quic` is reserved for a future mode.
 
 When a master secret matching your randoms and cipher text is found it will be printed in a format that can be read by wireshark as a master secret log file.
 

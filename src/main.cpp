@@ -73,26 +73,29 @@ void scan_entropy(float threshold, std::vector<unsigned char> haystack) {
 
 void printUsage(const char* progName) {
     std::cout << "Usage: " << progName
+              << " --tls12 "
               << " --client_random|-cr <32-byte hex> "
               << "--server_random|-sr <32-byte hex> "
               << "--client_finished|-cf <hex, max 61 bytes> "
               << "--algorithm|-a <gcm_256_sha_384|gcm_128_sha_256> "
               << "--haystack|-h <path>  (memory dump file path) "
               << "[--key-log <path>] "
-              << "[--app_data_record <path>] "
-              << "[--seq_num <int>] "
               << "[--memory-alignment|-ma <int>] "
               << "[--entropy|-e <float>] "
               << "[--entropy-scan|-es]\n"
               << "       " << progName
+              << " --tls13 "
               << " --app_data_record <path> --seq_num <int> "
               << "--client_random|-cr <32-byte hex> "
               << "(--client|--server) "
+              << "--algorithm|-a <gcm_256_sha_384|gcm_128_sha_256> "
               << "--haystack|-h <path>  (memory dump file path) "
               << "[--key-log <path>] "
               << "[--memory-alignment|-ma <int>] "
               << "[--entropy|-e <float>] "
-              << "[--entropy-scan|-es]" << std::endl;
+              << "[--entropy-scan|-es]\n"
+              << "       " << progName
+              << " --quic  (not implemented yet)" << std::endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -111,6 +114,9 @@ int main(int argc, char* argv[]) {
     float entropy_threshold = 4.4f; // Default entropy threshold.
     uint64_t memory_alignment = 4;
     bool run_entropy_scan = false;
+    bool mode_tls12 = false;
+    bool mode_tls13 = false;
+    bool mode_quic = false;
 
     // Parse command-line arguments.
     for (int i = 1; i < argc; ++i) {
@@ -200,6 +206,12 @@ int main(int argc, char* argv[]) {
             scan_client = true;
         } else if (arg == "--server") {
             scan_server = true;
+        } else if (arg == "--tls12") {
+            mode_tls12 = true;
+        } else if (arg == "--tls13") {
+            mode_tls13 = true;
+        } else if (arg == "--quic") {
+            mode_quic = true;
         } else if (arg == "--entropy-scan" || arg == "-es") {
             run_entropy_scan = true;
         } else {
@@ -207,6 +219,22 @@ int main(int argc, char* argv[]) {
             printUsage(argv[0]);
             return 1;
         }
+    }
+
+    int mode_count = (mode_tls12 ? 1 : 0) + (mode_tls13 ? 1 : 0) + (mode_quic ? 1 : 0);
+    if (mode_count == 0) {
+        std::cerr << "Error: Missing mode flag. Use one of --tls12, --tls13, or --quic." << std::endl;
+        printUsage(argv[0]);
+        return 1;
+    }
+    if (mode_count > 1) {
+        std::cerr << "Error: --tls12, --tls13, and --quic are mutually exclusive." << std::endl;
+        printUsage(argv[0]);
+        return 1;
+    }
+    if (mode_quic) {
+        std::cerr << "Error: QUIC mode is not implemented yet." << std::endl;
+        return 1;
     }
 
     if (memory_alignment == 0) {
@@ -219,21 +247,44 @@ int main(int argc, char* argv[]) {
     }
 
     bool has_app_data_record = !app_data_record_path.empty();
-    if (has_app_data_record != has_seq_num) {
-        std::cerr << "Error: --app_data_record and --seq_num must be provided together." << std::endl;
-        printUsage(argv[0]);
-        return 1;
-    }
-    bool use_tls13 = has_app_data_record;
-    if (use_tls13 && !(scan_client ^ scan_server)) {
-        std::cerr << "Error: TLS 1.3 mode requires --client or --server." << std::endl;
-        printUsage(argv[0]);
-        return 1;
-    }
-    if (use_tls13 && client_random.empty()) {
-        std::cerr << "Error: TLS 1.3 mode requires --client_random." << std::endl;
-        printUsage(argv[0]);
-        return 1;
+    bool use_tls13 = mode_tls13;
+    if (use_tls13) {
+        if (!has_app_data_record || !has_seq_num) {
+            std::cerr << "Error: TLS 1.3 mode requires --app_data_record and --seq_num." << std::endl;
+            printUsage(argv[0]);
+            return 1;
+        }
+        if (!(scan_client ^ scan_server)) {
+            std::cerr << "Error: TLS 1.3 mode requires --client or --server." << std::endl;
+            printUsage(argv[0]);
+            return 1;
+        }
+        if (client_random.empty()) {
+            std::cerr << "Error: TLS 1.3 mode requires --client_random." << std::endl;
+            printUsage(argv[0]);
+            return 1;
+        }
+        if (algorithm.empty()) {
+            std::cerr << "Error: TLS 1.3 mode requires --algorithm." << std::endl;
+            printUsage(argv[0]);
+            return 1;
+        }
+        if (!server_random.empty() || !client_finished.empty()) {
+            std::cerr << "Error: TLS 1.3 mode does not accept --server_random or --client_finished." << std::endl;
+            printUsage(argv[0]);
+            return 1;
+        }
+    } else {
+        if (has_app_data_record || has_seq_num) {
+            std::cerr << "Error: TLS 1.2 mode does not accept --app_data_record or --seq_num." << std::endl;
+            printUsage(argv[0]);
+            return 1;
+        }
+        if (scan_client || scan_server) {
+            std::cerr << "Error: TLS 1.2 mode does not accept --client or --server." << std::endl;
+            printUsage(argv[0]);
+            return 1;
+        }
     }
 
     // Validate required arguments.
@@ -279,7 +330,7 @@ int main(int argc, char* argv[]) {
         return -1;
     }
     std::vector<unsigned char> app_data_record;
-    if (has_app_data_record) {
+    if (use_tls13) {
         try {
             printf("loading app data record file %s ...\n", app_data_record_path.c_str());
             app_data_record = loadFileBytes(app_data_record_path);
@@ -342,7 +393,7 @@ int main(int argc, char* argv[]) {
                                                                          static_cast<int>(app_data_record.size()),
                                                                          seq_num, client_random_arr,
                                                                          entropy_threshold, scan_client);
-        } else if (!algorithm.empty()) {
+        } else {
             std::cerr << "Error: Unsupported algorithm. Use 'gcm_256_sha_384' or 'gcm_128_sha_256'." << std::endl;
             return 1;
         }
