@@ -319,18 +319,22 @@ def extract_handshake_info(flow):
 
 def list_app_records(records):
     app_records = []
-    index = 0
-    for record in records:
-        if record["type"] != 23:
-            continue
+    filtered_records = [r for r in records if r["type"] == 23]
+    for i, record in enumerate(filtered_records):
+        if i == 0:
+            epoch = 0
+            sequence = 0
+        else:
+            epoch = 1
+            sequence = i - 1
         app_records.append(
             {
                 "data": record["data"],
                 "timestamp": record["timestamp"],
-                "index": index,
+                "epoch": epoch,
+                "sequence": sequence,
             }
         )
-        index += 1
     return app_records
 
 
@@ -378,10 +382,26 @@ def attempt_secret(flow, dir_key, dump_path, keylog_path, role):
         print(f"[!] Not enough TLS application data records for {role} direction.")
         return False
 
-    candidate = app_records[1]
-    seq_num = 1
+    start_time = flow.get("client_hello_ts") or flow.get("first_seen")
+    candidates = []
+    for record in app_records:
+        if record["epoch"] != 1:
+            continue
+        if start_time is not None and record["timestamp"] is not None:
+            if record["timestamp"] - start_time > 8.0:
+                continue
+        candidates.append(record)
+
+    if not candidates:
+        print(f"[!] No suitable application data records found (within 8s) for {role} direction.")
+        return False
+
+    candidate = min(candidates, key=lambda r: len(r["data"]))
+    seq_num = candidate["sequence"]
+
     src, dst = dir_key
     print(f"[*] {role} scan: TLS 1.3 (TLS/TCP) | connection: {src.ip}:{src.port} -> {dst.ip}:{dst.port}")
+    print(f"    Selected record seq={seq_num}, len={len(candidate['data'])}, time_offset={candidate['timestamp'] - start_time if start_time else 'N/A'}")
     success, output, code = run_voses(
         flow["voses_path"],
         dump_path,
@@ -496,16 +516,6 @@ def main():
 
         flow["algorithm"] = algorithm
         flow["voses_path"] = args.voses
-        if flow["client_dir"]:
-            direction_label = (
-                f"{flow['client_dir'][0].ip}:{flow['client_dir'][0].port} -> "
-                f"{flow['client_dir'][1].ip}:{flow['client_dir'][1].port}"
-            )
-        else:
-            direction_label = f"{hint['src'].ip}:{hint['src'].port} -> {hint['dst'].ip}:{hint['dst'].port}"
-        print(f"\n=== Session {flow['client_random']} ({direction_label}) ===")
-        print(f"Dump: {dump_path}")
-        print(f"Cipher: {algorithm}")
 
         if not flow["client_dir"] or not flow["server_dir"]:
             print("[!] Missing direction info, skipping.")
