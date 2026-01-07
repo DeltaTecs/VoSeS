@@ -52,12 +52,21 @@ voses.exe --tls13
   [--entropy|-e <float>]
   [--entropy-scan|-es]
 
-voses.exe --quic  (not implemented yet)
+voses.exe --quic
+  --quic_packet <path>
+  [--dcid_len <int>]
+  --client_random|-cr <32-byte hex>
+  (--client|--server)
+  --algorithm|-a <gcm_256_sha_384|gcm_128_sha_256>
+  --haystack|-h <path>  (memory dump file path)
+  [--memory-alignment|-ma <int>]
+  [--entropy|-e <float>]
+  [--entropy-scan|-es]
 ```
 
 set entropy to a different filter value if you like. scan will show you how many 48 byte locations match your filter.
 
-Use `--tls13` with `--app_data_record` and `--seq_num` to scan for TLS 1.3 application traffic secret 0; in that mode you must supply `--client_random` and `--client` or `--server`. Use `--tls12` for TLS 1.2 master secret scans. `--quic` is reserved for a future mode.
+Use `--tls13` with `--app_data_record` and `--seq_num` to scan for TLS 1.3 application traffic secret 0; in that mode you must supply `--client_random` and `--client` or `--server`. Use `--tls12` for TLS 1.2 master secret scans. Use `--quic` with a QUIC packet and optionally `--dcid_len` (required for short headers) to scan for QUIC application traffic secret 0.
 
 When a master secret matching your randoms and cipher text is found it will be printed in a format that can be read by wireshark as a master secret log file.
 

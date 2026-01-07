@@ -4,6 +4,7 @@
 #include <sstream>
 #include <iomanip>
 #include <fstream>
+#include <limits>
 #include <cuda_runtime.h>
 #include <cstdint>
 #include <cstring>
@@ -63,6 +64,140 @@ bool appendKeyLogLine(const std::string& path, const std::string& label,
     return true;
 }
 
+bool parseQuicVarInt(const unsigned char* data, size_t data_len, size_t offset,
+                     uint64_t* value, size_t* consumed_len) {
+    if (offset >= data_len) {
+        return false;
+    }
+    unsigned char first = data[offset];
+    size_t length = static_cast<size_t>(1u << (first >> 6));
+    if (offset + length > data_len) {
+        return false;
+    }
+    uint64_t parsed = first & 0x3f;
+    for (size_t i = 1; i < length; ++i) {
+        parsed = (parsed << 8) | data[offset + i];
+    }
+    *value = parsed;
+    *consumed_len = length;
+    return true;
+}
+
+bool parseQuicPacketPnOffset(const unsigned char* packet, size_t packet_len, int dcid_len_hint,
+                             size_t* pn_offset_out, std::string* error_out) {
+    if (packet_len == 0) {
+        *error_out = "QUIC packet is empty.";
+        return false;
+    }
+
+    unsigned char first = packet[0];
+    bool is_long_header = (first & 0x80) != 0;
+    if ((first & 0x40) == 0) {
+        *error_out = "QUIC fixed bit is not set.";
+        return false;
+    }
+
+    if (!is_long_header) {
+        if (dcid_len_hint < 0) {
+            *error_out = "Short header requires --dcid_len to compute pn_offset.";
+            return false;
+        }
+        if (dcid_len_hint > 20) {
+            *error_out = "Short header dcid_len is larger than 20 bytes.";
+            return false;
+        }
+        size_t offset = 1 + static_cast<size_t>(dcid_len_hint);
+        if (offset >= packet_len) {
+            *error_out = "Short header is too short for dcid_len.";
+            return false;
+        }
+        *pn_offset_out = offset;
+        return true;
+    }
+
+    if (packet_len < 6) {
+        *error_out = "Long header is too short for version field.";
+        return false;
+    }
+
+    uint32_t version = (static_cast<uint32_t>(packet[1]) << 24) |
+                       (static_cast<uint32_t>(packet[2]) << 16) |
+                       (static_cast<uint32_t>(packet[3]) << 8) |
+                       static_cast<uint32_t>(packet[4]);
+    if (version == 0) {
+        *error_out = "Version Negotiation packet does not include a packet number.";
+        return false;
+    }
+
+    size_t pos = 5;
+    if (pos >= packet_len) {
+        *error_out = "Missing DCID length.";
+        return false;
+    }
+    unsigned char dcid_len = packet[pos++];
+    if (dcid_len > 20) {
+        *error_out = "DCID length exceeds 20 bytes.";
+        return false;
+    }
+    if (pos + dcid_len > packet_len) {
+        *error_out = "Packet too short for DCID.";
+        return false;
+    }
+    pos += dcid_len;
+
+    if (pos >= packet_len) {
+        *error_out = "Missing SCID length.";
+        return false;
+    }
+    unsigned char scid_len = packet[pos++];
+    if (scid_len > 20) {
+        *error_out = "SCID length exceeds 20 bytes.";
+        return false;
+    }
+    if (pos + scid_len > packet_len) {
+        *error_out = "Packet too short for SCID.";
+        return false;
+    }
+    pos += scid_len;
+
+    unsigned char long_type = static_cast<unsigned char>((first >> 4) & 0x03);
+    if (long_type == 0x03) {
+        *error_out = "Retry packet does not include a packet number.";
+        return false;
+    }
+
+    if (long_type == 0x00) {
+        uint64_t token_len = 0;
+        size_t token_len_bytes = 0;
+        if (!parseQuicVarInt(packet, packet_len, pos, &token_len, &token_len_bytes)) {
+            *error_out = "Failed to parse Initial token length.";
+            return false;
+        }
+        pos += token_len_bytes;
+        if (pos + token_len > packet_len) {
+            *error_out = "Packet too short for Initial token.";
+            return false;
+        }
+        pos += static_cast<size_t>(token_len);
+    }
+
+    uint64_t payload_len = 0;
+    size_t payload_len_bytes = 0;
+    if (!parseQuicVarInt(packet, packet_len, pos, &payload_len, &payload_len_bytes)) {
+        *error_out = "Failed to parse QUIC payload length.";
+        return false;
+    }
+    pos += payload_len_bytes;
+    if (pos >= packet_len) {
+        *error_out = "Packet too short for packet number.";
+        return false;
+    }
+
+    *pn_offset_out = pos;
+    (void)payload_len;
+    return true;
+}
+
 void scan_entropy(float threshold, std::vector<unsigned char> haystack) {
 
     unsigned long long h_entropy_candidates = entropy_scan(haystack.data(), haystack.size(), 48, threshold);
@@ -95,7 +230,17 @@ void printUsage(const char* progName) {
               << "[--entropy|-e <float>] "
               << "[--entropy-scan|-es]\n"
               << "       " << progName
-              << " --quic  (not implemented yet)" << std::endl;
+              << " --quic "
+              << " --quic_packet <path> "
+              << "[--dcid_len <int>] "
+              << "--client_random|-cr <32-byte hex> "
+              << "(--client|--server) "
+              << "--algorithm|-a <gcm_256_sha_384|gcm_128_sha_256> "
+              << "--haystack|-h <path>  (memory dump file path) "
+              << "[--key-log <path>] "
+              << "[--memory-alignment|-ma <int>] "
+              << "[--entropy|-e <float>] "
+              << "[--entropy-scan|-es]\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -107,6 +252,7 @@ int main(int argc, char* argv[]) {
     std::string haystack_path;
     std::string key_log_path;
     std::string app_data_record_path;
+    std::string quic_packet_path;
     uint64_t seq_num = 0;
     bool has_seq_num = false;
     bool scan_client = false;
@@ -117,6 +263,7 @@ int main(int argc, char* argv[]) {
     bool mode_tls12 = false;
     bool mode_tls13 = false;
     bool mode_quic = false;
+    int quic_dcid_len = -1;
 
     // Parse command-line arguments.
     for (int i = 1; i < argc; ++i) {
@@ -193,6 +340,22 @@ int main(int argc, char* argv[]) {
                 printUsage(argv[0]);
                 return 1;
             }
+        } else if (arg == "--quic_packet") {
+            if (i + 1 < argc) {
+                quic_packet_path = argv[++i];
+            } else {
+                std::cerr << "Error: Missing value for " << arg << std::endl;
+                printUsage(argv[0]);
+                return 1;
+            }
+        } else if (arg == "--dcid_len") {
+            if (i + 1 < argc) {
+                quic_dcid_len = std::stoi(argv[++i]);
+            } else {
+                std::cerr << "Error: Missing value for " << arg << std::endl;
+                printUsage(argv[0]);
+                return 1;
+            }
         } else if (arg == "--seq_num") {
             if (i + 1 < argc) {
                 seq_num = std::stoull(argv[++i]);
@@ -232,10 +395,6 @@ int main(int argc, char* argv[]) {
         printUsage(argv[0]);
         return 1;
     }
-    if (mode_quic) {
-        std::cerr << "Error: QUIC mode is not implemented yet." << std::endl;
-        return 1;
-    }
 
     if (memory_alignment == 0) {
         std::cerr << "Error: --memory-alignment must be greater than zero." << std::endl;
@@ -247,7 +406,9 @@ int main(int argc, char* argv[]) {
     }
 
     bool has_app_data_record = !app_data_record_path.empty();
+    bool has_quic_packet = !quic_packet_path.empty();
     bool use_tls13 = mode_tls13;
+    bool use_quic = mode_quic;
     if (use_tls13) {
         if (!has_app_data_record || !has_seq_num) {
             std::cerr << "Error: TLS 1.3 mode requires --app_data_record and --seq_num." << std::endl;
@@ -269,14 +430,44 @@ int main(int argc, char* argv[]) {
             printUsage(argv[0]);
             return 1;
         }
-        if (!server_random.empty() || !client_finished.empty()) {
-            std::cerr << "Error: TLS 1.3 mode does not accept --server_random or --client_finished." << std::endl;
+        if (!server_random.empty() || !client_finished.empty() || has_quic_packet || quic_dcid_len >= 0) {
+            std::cerr << "Error: TLS 1.3 mode does not accept TLS 1.2 or QUIC inputs." << std::endl;
             printUsage(argv[0]);
             return 1;
         }
+    } else if (use_quic) {
+        if (!has_quic_packet) {
+            std::cerr << "Error: QUIC mode requires --quic_packet." << std::endl;
+            printUsage(argv[0]);
+            return 1;
+        }
+        if (!(scan_client ^ scan_server)) {
+            std::cerr << "Error: QUIC mode requires --client or --server." << std::endl;
+            printUsage(argv[0]);
+            return 1;
+        }
+        if (client_random.empty()) {
+            std::cerr << "Error: QUIC mode requires --client_random." << std::endl;
+            printUsage(argv[0]);
+            return 1;
+        }
+        if (algorithm.empty()) {
+            std::cerr << "Error: QUIC mode requires --algorithm." << std::endl;
+            printUsage(argv[0]);
+            return 1;
+        }
+        if (!server_random.empty() || !client_finished.empty() || has_app_data_record || has_seq_num) {
+            std::cerr << "Error: QUIC mode does not accept TLS 1.2 or TLS 1.3 inputs." << std::endl;
+            printUsage(argv[0]);
+            return 1;
+        }
+        if (quic_dcid_len > 20) {
+            std::cerr << "Error: --dcid_len must be between 0 and 20." << std::endl;
+            return 1;
+        }
     } else {
-        if (has_app_data_record || has_seq_num) {
-            std::cerr << "Error: TLS 1.2 mode does not accept --app_data_record or --seq_num." << std::endl;
+        if (has_app_data_record || has_seq_num || has_quic_packet || quic_dcid_len >= 0) {
+            std::cerr << "Error: TLS 1.2 mode does not accept TLS 1.3 or QUIC inputs." << std::endl;
             printUsage(argv[0]);
             return 1;
         }
@@ -288,7 +479,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Validate required arguments.
-    if (use_tls13) {
+    if (use_tls13 || use_quic) {
         if (haystack_path.empty()) {
             std::cerr << "Error: Missing required arguments." << std::endl;
             printUsage(argv[0]);
@@ -303,7 +494,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (!use_tls13) {
+    if (!use_tls13 && !use_quic) {
         // Validate hex string lengths.
         if (client_random.length() != 64) { // 32 bytes = 64 hex characters.
             std::cerr << "Error: --client_random must be 32-byte hex (64 hex characters)." << std::endl;
@@ -330,6 +521,7 @@ int main(int argc, char* argv[]) {
         return -1;
     }
     std::vector<unsigned char> app_data_record;
+    std::vector<unsigned char> quic_packet;
     if (use_tls13) {
         try {
             printf("loading app data record file %s ...\n", app_data_record_path.c_str());
@@ -344,6 +536,18 @@ int main(int argc, char* argv[]) {
         }
         if (app_data_record[0] != 0x17) {
             std::cerr << "Error: --app_data_record must start with 0x17 (TLS application data)." << std::endl;
+            return 1;
+        }
+    } else if (use_quic) {
+        try {
+            printf("loading quic packet file %s ...\n", quic_packet_path.c_str());
+            quic_packet = loadFileBytes(quic_packet_path);
+        } catch (const std::exception& e) {
+            std::cerr << "Error loading quic packet file: " << e.what() << std::endl;
+            return -1;
+        }
+        if (quic_packet.empty()) {
+            std::cerr << "Error: --quic_packet is empty." << std::endl;
             return 1;
         }
     }
@@ -393,6 +597,65 @@ int main(int argc, char* argv[]) {
                                                                          static_cast<int>(app_data_record.size()),
                                                                          seq_num, client_random_arr,
                                                                          entropy_threshold, scan_client);
+        } else {
+            std::cerr << "Error: Unsupported algorithm. Use 'gcm_256_sha_384' or 'gcm_128_sha_256'." << std::endl;
+            return 1;
+        }
+
+        if (!key_log_path.empty() && key_length > 0 && key_location != k_addr_not_found) {
+            size_t key_offset = static_cast<size_t>(key_location);
+            if (key_offset + key_length > haystack.size()) {
+                std::cerr << "Error: Key location is out of bounds for the haystack." << std::endl;
+                return 1;
+            }
+            if (!appendKeyLogLine(key_log_path, key_label, client_random_arr, 32,
+                                  haystack.data() + key_offset, key_length)) {
+                return 1;
+            }
+        }
+    } else if (use_quic) {
+        printf("specified quic packet length: %zu bytes\n", quic_packet.size());
+
+        size_t pn_offset = 0;
+        std::string pn_error;
+        if (!parseQuicPacketPnOffset(quic_packet.data(), quic_packet.size(), quic_dcid_len, &pn_offset, &pn_error)) {
+            std::cerr << "Error: failed to parse QUIC packet: " << pn_error << std::endl;
+            return 1;
+        }
+        if (pn_offset + 4 + 16 > quic_packet.size()) {
+            std::cerr << "Error: QUIC packet too short for header protection sample." << std::endl;
+            return 1;
+        }
+        if (pn_offset > static_cast<size_t>(std::numeric_limits<short>::max())) {
+            std::cerr << "Error: QUIC pn_offset is too large for CUDA kernel parameters." << std::endl;
+            return 1;
+        }
+        if (quic_packet.size() > static_cast<size_t>(std::numeric_limits<short>::max())) {
+            std::cerr << "Error: QUIC packet length is too large for CUDA kernel parameters." << std::endl;
+            return 1;
+        }
+        short pn_offset_short = static_cast<short>(pn_offset);
+        int packet_length = static_cast<int>(quic_packet.size());
+
+        unsigned long long key_location = k_addr_not_found;
+        size_t key_length = 0;
+        std::string key_label;
+        if (algorithm == "gcm_128_sha_256") {
+            key_length = kTls13AppTrafficSecret0LenSha256;
+            key_label = scan_client ? "CLIENT_TRAFFIC_SECRET_0" : "SERVER_TRAFFIC_SECRET_0";
+            key_location = quic_app_traffic_secret_0_gcm_128_sha_256_scan(haystack.data(), haystack.size(),
+                                                                           quic_packet.data(),
+                                                                           packet_length, pn_offset_short,
+                                                                           client_random_arr,
+                                                                           entropy_threshold, scan_client);
+        } else if (algorithm == "gcm_256_sha_384") {
+            key_length = kTls13AppTrafficSecret0LenSha384;
+            key_label = scan_client ? "CLIENT_TRAFFIC_SECRET_0" : "SERVER_TRAFFIC_SECRET_0";
+            key_location = quic_app_traffic_secret_0_gcm_256_sha_384_scan(haystack.data(), haystack.size(),
+                                                                           quic_packet.data(),
+                                                                           packet_length, pn_offset_short,
+                                                                           client_random_arr,
+                                                                           entropy_threshold, scan_client);
         } else {
             std::cerr << "Error: Unsupported algorithm. Use 'gcm_256_sha_384' or 'gcm_128_sha_256'." << std::endl;
             return 1;

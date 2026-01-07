@@ -6,6 +6,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cuda_runtime.h>
+#include <limits>
 #include "crypto/aes128.h"
 #include "crypto/aes256.h"
 #include "crypto/sha256.h"
@@ -44,6 +45,12 @@ __global__ void tls13_verify_gcm256(unsigned char* d_result, const unsigned char
     *d_result = cuda_match_app_traffic_secret_0_gcm256_sha384(d_app_traffic_secret_0, app_traffic_secret_len,
                                                               seq_num, d_aad, aad_length,
                                                               d_chiphertext, ciphertext_length);
+}
+
+__global__ void quic_verify_gcm128(unsigned char* d_result, const unsigned char* d_app_traffic_secret_0, short app_traffic_secret_len,
+                                   const unsigned char* d_packet, short packet_length, short pn_offset) {
+    *d_result = cuda_match_quic_app_traffic_secret_0_gcm128_sha256(d_app_traffic_secret_0, app_traffic_secret_len,
+                                                                   d_packet, packet_length, pn_offset);
 }
 
 // CUDA kernel that encrypts one AES block using ECB mode
@@ -862,6 +869,68 @@ bool test_tls13_app_traffic_secret_gcm256_sha384() {
     return success;
 }
 
+bool test_quic_app_traffic_secret_gcm128_sha256() {
+    std::string app_traffic_secret = "94048e2729a46528da18059848c02ae2ac434643644018b7f10ec70a8110109a";
+    std::string packet_hex = "5101d3f04c63fca7a6b3d18d4c83fcbf5a113eb363e4f385b9288f358171324e6e38b9b189700091961797cebe5dba22cbd3a0be5f999e4fc2c7cab8c7e78d76169ec5bfa9013eb487161635948d4ca8f9950c40dda9";
+
+    std::vector<unsigned char> secret_bytes = hexStringToByteArray(app_traffic_secret);
+    std::vector<unsigned char> packet_bytes = hexStringToByteArray(packet_hex);
+
+    if (secret_bytes.size() != 32 || packet_bytes.empty()) {
+        printf("QUIC test FAIL! Invalid input sizes.\n");
+        return false;
+    }
+    if (packet_bytes.size() > static_cast<size_t>(std::numeric_limits<short>::max())) {
+        printf("QUIC test FAIL! Packet too large for CUDA parameters.\n");
+        return false;
+    }
+
+    unsigned char* d_result = nullptr;
+    unsigned char* d_secret = nullptr;
+    unsigned char* d_packet = nullptr;
+
+    cudaMalloc((void**)&d_result, sizeof(unsigned char));
+    cudaMalloc((void**)&d_secret, secret_bytes.size() * sizeof(unsigned char));
+    cudaMalloc((void**)&d_packet, packet_bytes.size() * sizeof(unsigned char));
+
+    cudaMemcpy(d_secret, secret_bytes.data(), secret_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_packet, packet_bytes.data(), packet_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    bool success = false;
+    int matched_dcid_len = -1;
+    unsigned char h_result = 0;
+    short packet_length = static_cast<short>(packet_bytes.size());
+    short secret_length = static_cast<short>(secret_bytes.size());
+
+    // Short headers require a known DCID length; brute-force 0..20 to recover pn_offset.
+    for (int dcid_len = 0; dcid_len <= 20; dcid_len++) {
+        short pn_offset = static_cast<short>(1 + dcid_len);
+        if (pn_offset >= packet_length) {
+            continue;
+        }
+        quic_verify_gcm128<<<1, 1>>>(d_result, d_secret, secret_length, d_packet, packet_length, pn_offset);
+        cudaDeviceSynchronize();
+        cudaMemcpy(&h_result, d_result, sizeof(unsigned char), cudaMemcpyDeviceToHost);
+        if (h_result != 0) {
+            success = true;
+            matched_dcid_len = dcid_len;
+            break;
+        }
+    }
+
+    if (!success) {
+        printf("QUIC app traffic secret test FAIL! No matching dcid_len found.\n");
+    } else {
+        printf("QUIC app traffic secret test pass (dcid_len=%d)\n", matched_dcid_len);
+    }
+
+    cudaFree(d_result);
+    cudaFree(d_secret);
+    cudaFree(d_packet);
+
+    return success;
+}
+
 bool test_full_gcm128() {
 
     std::string master_secret = "afabc92e6ac6a0a785b6518c5bef8e1010d5ec2c95e8829cd769387e8840d73dfbd0e17f4c9bdddacdc61fef992b3c06";
@@ -1135,6 +1204,7 @@ bool run_tests() {
     bool suc11 = test_tls13_app_traffic_secret_gcm128_sha256_match();
     bool suc12 = test_tls13_app_traffic_secret_scan_user_case();
     bool suc13 = test_tls13_server_traffic_secret_scan_user_case();
+    bool suc14 = test_quic_app_traffic_secret_gcm128_sha256();
     return suc0 && 
            suc1 && 
            suc2 && 
@@ -1148,5 +1218,6 @@ bool run_tests() {
            suc10 &&
            suc11 &&
            suc12 &&
-           suc13;
+           suc13 &&
+           suc14;
 }
