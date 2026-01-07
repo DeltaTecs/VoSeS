@@ -15,7 +15,9 @@
 #include "crypto/hmac-sha384.h"
 #include "crypto/kdf.h"
 #include "crypto/gcm128.h"
-#include "extract/tls-gcm-extract.h"
+#include "extract/tls12/tls12-gcm-extract.h"
+#include "extract/tls13/tls13-gcm-extract.h"
+#include "extract/quic/quic-gcm-extract.h"
 #include "extract/extractor.h"
 #include "../host_util.h"
 
