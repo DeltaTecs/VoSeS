@@ -296,6 +296,110 @@ __device__ void cuda_derive_tls13_key_256(const unsigned char *d_app_traffic_sec
                             d_iv, iv_len);
 }
 
+// This function implements QUIC key derivation for AES-128-GCM-SHA256.
+// It derives a 16-byte key, a 12-byte IV, and a 16-byte header protection key using HKDF-Expand-Label.
+//   key: 16 bytes
+//   iv: 12 bytes
+//   hp_key: 16 bytes
+__device__ void cuda_derive_quic_keys_128(const unsigned char *d_secret, short d_secret_len,
+                              unsigned char *d_key, unsigned char *d_iv, unsigned char *d_hp_key)
+{
+    const short key_len = 16; // AES-128 key length
+    const short iv_len = 12; // QUIC IV length
+    const short hp_len = 16; // AES-128 header protection key length
+
+    const char *key_label = "quic key";
+    const short key_label_len = 8;
+    const char *iv_label = "quic iv";
+    const short iv_label_len = 7;
+    const char *hp_label = "quic hp";
+    const short hp_label_len = 7;
+    const short hkdf_key_label_len = 2 + 1 + 6 + key_label_len + 1; // len(2) + label_len(1) + "tls13 "(6) + label + context_len(1)
+    const short hkdf_iv_label_len = 2 + 1 + 6 + iv_label_len + 1; // len(2) + label_len(1) + "tls13 "(6) + label + context_len(1)
+    const short hkdf_hp_label_len = 2 + 1 + 6 + hp_label_len + 1; // len(2) + label_len(1) + "tls13 "(6) + label + context_len(1)
+    unsigned char hkdf_key_label[hkdf_key_label_len];
+    unsigned char hkdf_iv_label[hkdf_iv_label_len];
+    unsigned char hkdf_hp_label[hkdf_hp_label_len];
+
+    short hkdf_key_label_actual_len = cuda_build_hkdf_label(key_label, key_label_len, key_len,
+                                                            hkdf_key_label, hkdf_key_label_len);
+    if (hkdf_key_label_actual_len == 0) {
+        return;
+    }
+    short hkdf_iv_label_actual_len = cuda_build_hkdf_label(iv_label, iv_label_len, iv_len,
+                                                           hkdf_iv_label, hkdf_iv_label_len);
+    if (hkdf_iv_label_actual_len == 0) {
+        return;
+    }
+    short hkdf_hp_label_actual_len = cuda_build_hkdf_label(hp_label, hp_label_len, hp_len,
+                                                           hkdf_hp_label, hkdf_hp_label_len);
+    if (hkdf_hp_label_actual_len == 0) {
+        return;
+    }
+
+    cuda_hkdf_expand_sha256(d_secret, d_secret_len,
+                            hkdf_key_label, hkdf_key_label_actual_len,
+                            d_key, key_len);
+    cuda_hkdf_expand_sha256(d_secret, d_secret_len,
+                            hkdf_iv_label, hkdf_iv_label_actual_len,
+                            d_iv, iv_len);
+    cuda_hkdf_expand_sha256(d_secret, d_secret_len,
+                            hkdf_hp_label, hkdf_hp_label_actual_len,
+                            d_hp_key, hp_len);
+}
+
+// This function implements QUIC key derivation for AES-256-GCM-SHA384.
+// It derives a 32-byte key, a 12-byte IV, and a 32-byte header protection key using HKDF-Expand-Label.
+//   key: 32 bytes
+//   iv: 12 bytes
+//   hp_key: 32 bytes
+__device__ void cuda_derive_quic_keys_256(const unsigned char *d_secret, short d_secret_len,
+                              unsigned char *d_key, unsigned char *d_iv, unsigned char *d_hp_key)
+{
+    const short key_len = 32; // AES-256 key length
+    const short iv_len = 12; // QUIC IV length
+    const short hp_len = 32; // AES-256 header protection key length
+
+    const char *key_label = "quic key";
+    const short key_label_len = 8;
+    const char *iv_label = "quic iv";
+    const short iv_label_len = 7;
+    const char *hp_label = "quic hp";
+    const short hp_label_len = 7;
+    const short hkdf_key_label_len = 2 + 1 + 6 + key_label_len + 1; // len(2) + label_len(1) + "tls13 "(6) + label + context_len(1)
+    const short hkdf_iv_label_len = 2 + 1 + 6 + iv_label_len + 1; // len(2) + label_len(1) + "tls13 "(6) + label + context_len(1)
+    const short hkdf_hp_label_len = 2 + 1 + 6 + hp_label_len + 1; // len(2) + label_len(1) + "tls13 "(6) + label + context_len(1)
+    unsigned char hkdf_key_label[hkdf_key_label_len];
+    unsigned char hkdf_iv_label[hkdf_iv_label_len];
+    unsigned char hkdf_hp_label[hkdf_hp_label_len];
+
+    short hkdf_key_label_actual_len = cuda_build_hkdf_label(key_label, key_label_len, key_len,
+                                                            hkdf_key_label, hkdf_key_label_len);
+    if (hkdf_key_label_actual_len == 0) {
+        return;
+    }
+    short hkdf_iv_label_actual_len = cuda_build_hkdf_label(iv_label, iv_label_len, iv_len,
+                                                           hkdf_iv_label, hkdf_iv_label_len);
+    if (hkdf_iv_label_actual_len == 0) {
+        return;
+    }
+    short hkdf_hp_label_actual_len = cuda_build_hkdf_label(hp_label, hp_label_len, hp_len,
+                                                           hkdf_hp_label, hkdf_hp_label_len);
+    if (hkdf_hp_label_actual_len == 0) {
+        return;
+    }
+
+    cuda_hkdf_expand_sha384(d_secret, d_secret_len,
+                            hkdf_key_label, hkdf_key_label_actual_len,
+                            d_key, key_len);
+    cuda_hkdf_expand_sha384(d_secret, d_secret_len,
+                            hkdf_iv_label, hkdf_iv_label_actual_len,
+                            d_iv, iv_len);
+    cuda_hkdf_expand_sha384(d_secret, d_secret_len,
+                            hkdf_hp_label, hkdf_hp_label_actual_len,
+                            d_hp_key, hp_len);
+}
+
 // This function implements the TLS 1.2 key expansion for AES-256-GCM-SHA384.
 // It derives a 72-byte key block from the master secret, server random, and client random,
 // then partitions it as follows:
