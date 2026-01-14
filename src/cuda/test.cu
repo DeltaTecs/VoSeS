@@ -1185,6 +1185,106 @@ bool test_tls13_server_traffic_secret_scan_user_case() {
     return success;
 }
 
+bool test_tls13_client_traffic_secret_scan_record_user_case() {
+    // User provided case for scanning client traffic secret using full TLS record.
+    std::string app_traffic_secret = "108e9cf0030ea1143063fe88f23d998e13d2ffc137c36a72f55893b807fa61a4";
+    std::string record_hex = "170303005797f20531ecea7f41c07ceac2325cbdd133ad0b148133d20b5b91ee7981b022cf4640f958e42802e1b40e3cf143539d1b2103ab23f58fa80768ae77ef0a401e437ff15c5ae6d45ea8bb1e0a0399dacf4109fc8f4b07722d";
+    uint64_t seq_num = 0;
+
+    std::vector<unsigned char> secret_bytes = hexStringToByteArray(app_traffic_secret);
+    std::vector<unsigned char> app_data_record = hexStringToByteArray(record_hex);
+
+    // 1MB haystack
+    uint64_t haystack_size = 1024 * 1024;
+    std::vector<unsigned char> haystack(haystack_size);
+    
+    // Fill with random data
+    for(size_t i=0; i<haystack_size; ++i) {
+        haystack[i] = rand() % 256;
+    }
+
+    // Insert secret at random position.
+    uint64_t secret_len = secret_bytes.size();
+    uint64_t max_pos = haystack_size - secret_len;
+    uint64_t secret_pos = (rand() % (max_pos - 1)) + 1;
+    
+    for(size_t i=0; i<secret_len; ++i) {
+        haystack[secret_pos + i] = secret_bytes[i];
+    }
+
+    unsigned char client_random[32] = {0}; // All zeros
+
+    set_memory_alignment(1);
+
+    unsigned long long found_pos = tls_app_traffic_secret_0_gcm_128_sha_256_scan(
+        haystack.data(), haystack_size,
+        app_data_record.data(), app_data_record.size(),
+        seq_num, client_random,
+        0.0f, // entropyThreshold
+        true // client
+    );
+
+    bool success = (found_pos == secret_pos);
+
+    if (!success) {
+        printf("TLS 1.3 client traffic secret scan record user case test FAIL! Expected %lu, found %llu\n", secret_pos, found_pos);
+    } else {
+        printf("TLS 1.3 client traffic secret scan record user case test pass. Found at %llu\n", found_pos);
+    }
+
+    return success;
+}
+
+bool test_tls13_server_traffic_secret_scan_record_user_case() {
+    // User provided case for scanning server traffic secret using full TLS record.
+    std::string app_traffic_secret = "f7328028a8bccc24a1bbad0e2244e941738713c4c9dc48f080cdc1a493926f11";
+    std::string record_hex = "17030300394230088cc85f26d93a1905bf4a80de27f45065069c4d510a9dcdcfb4bd3c5872f3ce8c35fd5b12fdf71a49ba79d44456cbb860fe66cf1523af";
+    uint64_t seq_num = 1;
+
+    std::vector<unsigned char> secret_bytes = hexStringToByteArray(app_traffic_secret);
+    std::vector<unsigned char> app_data_record = hexStringToByteArray(record_hex);
+
+    // 1MB haystack
+    uint64_t haystack_size = 1024 * 1024;
+    std::vector<unsigned char> haystack(haystack_size);
+    
+    // Fill with random data
+    for(size_t i=0; i<haystack_size; ++i) {
+        haystack[i] = rand() % 256;
+    }
+
+    // Insert secret at random position.
+    uint64_t secret_len = secret_bytes.size();
+    uint64_t max_pos = haystack_size - secret_len;
+    uint64_t secret_pos = (rand() % (max_pos - 1)) + 1;
+    
+    for(size_t i=0; i<secret_len; ++i) {
+        haystack[secret_pos + i] = secret_bytes[i];
+    }
+
+    unsigned char client_random[32] = {0}; // All zeros
+
+    set_memory_alignment(1);
+
+    unsigned long long found_pos = tls_app_traffic_secret_0_gcm_128_sha_256_scan(
+        haystack.data(), haystack_size,
+        app_data_record.data(), app_data_record.size(),
+        seq_num, client_random,
+        0.0f, // entropyThreshold
+        false // client
+    );
+
+    bool success = (found_pos == secret_pos);
+
+    if (!success) {
+        printf("TLS 1.3 server traffic secret scan record user case test FAIL! Expected %lu, found %llu\n", secret_pos, found_pos);
+    } else {
+        printf("TLS 1.3 server traffic secret scan record user case test pass. Found at %llu\n", found_pos);
+    }
+
+    return success;
+}
+
 
 bool run_tests() {
 
@@ -1204,7 +1304,9 @@ bool run_tests() {
     bool suc11 = test_tls13_app_traffic_secret_gcm128_sha256_match();
     bool suc12 = test_tls13_app_traffic_secret_scan_user_case();
     bool suc13 = test_tls13_server_traffic_secret_scan_user_case();
-    bool suc14 = test_quic_app_traffic_secret_gcm128_sha256();
+    bool suc14 = test_tls13_client_traffic_secret_scan_record_user_case();
+    bool suc15 = test_tls13_server_traffic_secret_scan_record_user_case();
+    bool suc16 = test_quic_app_traffic_secret_gcm128_sha256();
     return suc0 && 
            suc1 && 
            suc2 && 
@@ -1219,5 +1321,7 @@ bool run_tests() {
            suc11 &&
            suc12 &&
            suc13 &&
-           suc14;
+           suc14 &&
+           suc15 &&
+           suc16;
 }
