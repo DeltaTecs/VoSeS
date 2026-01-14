@@ -26,7 +26,11 @@ Compile on windows:
 Compile on Linux:
 1. `make`
 
-Run Tests:
+Run Tests (Windows):
+1. `cmake --build . --target voses_tests --config Release`
+2. `.\Release\voses_tests.exe`
+
+Run Tests (Linux):
 1. `make test`
 
 Run:
