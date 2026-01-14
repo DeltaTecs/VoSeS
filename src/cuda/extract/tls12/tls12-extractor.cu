@@ -8,6 +8,12 @@
 #include <string.h>
 
 #define TLS_MASTER_SECRET_LEN 48
+#define TLS12_AAD_LENGTH 13
+#define TLS12_MAX_CIPHERTEXT_LEN 16384
+
+__device__ __constant__ unsigned char d_tls12_const_aad[TLS12_AAD_LENGTH];
+__device__ __constant__ unsigned char d_tls12_const_ciphertext[TLS12_MAX_CIPHERTEXT_LEN];
+__device__ __constant__ short d_tls12_const_ciphertext_length;
 
 #define CUDA_CHECK(err, msg)            \
     do {                                \
@@ -43,8 +49,7 @@ __device__ void print_found_secret(unsigned char secret[TLS_MASTER_SECRET_LEN],
 __global__ void tls12_master_secret_scan_gcm128_sha256_kernel(const unsigned char* d_haystack, const uint64_t haystack_length,
                                                             const char percentile, unsigned char d_client_random[32],
                                                             unsigned char d_server_random[32], uint64_t seq_num,
-                                                            unsigned char* d_aad, short aad_length, unsigned char* d_chiphertext,
-                                                            short ciphertext_length, const float entropyThreshold, unsigned long long* d_addr_found) {
+                                                            const float entropyThreshold, unsigned long long* d_addr_found) {
 
     const unsigned long thread_index = blockIdx.x * blockDim.x + threadIdx.x;
     const uint64_t percentile_index = (percentile * blockDim.x * gridDim.x + thread_index) * d_memory_alignment;
@@ -67,7 +72,7 @@ __global__ void tls12_master_secret_scan_gcm128_sha256_kernel(const unsigned cha
     bool isMatch = cuda_match_master_secret_gcm128_sha256_plaintxt_cmp(candidate, TLS_MASTER_SECRET_LEN,
                                                                        d_client_random, d_server_random, seq_num,
                                                                        finished_plain, finished_plain_length,
-                                                                       d_chiphertext, ciphertext_length);
+                                                                       d_tls12_const_ciphertext, d_tls12_const_ciphertext_length);
     if (isMatch) {
         printf("\nMatch has entropy %f\n", entropy);
         print_found_secret(candidate, d_client_random, percentile_index);
@@ -78,8 +83,7 @@ __global__ void tls12_master_secret_scan_gcm128_sha256_kernel(const unsigned cha
 __global__ void tls12_master_secret_scan_gcm256_sha384_kernel(const unsigned char* d_haystack, const uint64_t haystack_length,
                                                             const char percentile, unsigned char d_client_random[32],
                                                             unsigned char d_server_random[32], uint64_t seq_num,
-                                                            unsigned char* d_aad, short aad_length, unsigned char* d_chiphertext,
-                                                            short ciphertext_length, const float entropyThreshold, unsigned long long* d_addr_found) {
+                                                            const float entropyThreshold, unsigned long long* d_addr_found) {
 
     const unsigned long thread_index = blockIdx.x * blockDim.x + threadIdx.x;
     const uint64_t percentile_index = (percentile * blockDim.x * gridDim.x + thread_index) * d_memory_alignment;
@@ -102,7 +106,7 @@ __global__ void tls12_master_secret_scan_gcm256_sha384_kernel(const unsigned cha
     bool isMatch = cuda_match_master_secret_gcm256_sha384_plaintxt_cmp(candidate, TLS_MASTER_SECRET_LEN,
                                                                        d_client_random, d_server_random, seq_num,
                                                                        finished_plain, finished_plain_length,
-                                                                       d_chiphertext, ciphertext_length);
+                                                                       d_tls12_const_ciphertext, d_tls12_const_ciphertext_length);
     if (isMatch) {
         printf("\nMatch has entropy %f\n", entropy);
         print_found_secret(candidate, d_client_random, percentile_index);
@@ -117,8 +121,7 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
                                                     void (*search_kernel) (const unsigned char*, const uint64_t,
                                                             const char, unsigned char[32],
                                                             unsigned char[32], uint64_t,
-                                                            unsigned char*, short, unsigned char*,
-                                                            short, const float, unsigned long long*)) {
+                                                            const float, unsigned long long*)) {
 
     if (client_finished_msg[0] != 0x16) {
         printf("ERROR did not receive a finished message!\n");
@@ -154,6 +157,11 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
     }
     
     const int ciphertext_len = client_finished_length - AAD_LENGTH - (dtls ? 8 : 0);
+    if (ciphertext_len > TLS12_MAX_CIPHERTEXT_LEN) {
+        printf("ERROR ciphertext length %d exceeds constant memory limit %d.\n", ciphertext_len, TLS12_MAX_CIPHERTEXT_LEN);
+        free(aad_bytes);
+        return k_addr_not_found;
+    }
     unsigned char* ciphertext_bytes = (unsigned char*) malloc(ciphertext_len);
     memcpy(ciphertext_bytes, client_finished_msg + AAD_LENGTH + (dtls ? 8 : 0), ciphertext_len);
 
@@ -162,8 +170,6 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
     unsigned char *d_haystack = nullptr;
     unsigned char* d_client_random = nullptr;
     unsigned char* d_server_random = nullptr;
-    unsigned char* d_aad = nullptr;
-    unsigned char* d_chiphertext = nullptr;
     unsigned long long* d_addr_found = nullptr;
 
     cudaError_t err;
@@ -173,10 +179,6 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
     CUDA_CHECK(err, "cudaMalloc failed for d_client_random");
     err = cudaMalloc((void**)&d_server_random, 32);
     CUDA_CHECK(err, "cudaMalloc failed for d_server_random");
-    err = cudaMalloc((void**)&d_aad, AAD_LENGTH);
-    CUDA_CHECK(err, "cudaMalloc failed for d_aad");
-    err = cudaMalloc((void**)&d_chiphertext, ciphertext_len);
-    CUDA_CHECK(err, "cudaMalloc failed for d_chiphertext");
     err = cudaMalloc((void**)&d_addr_found, sizeof(unsigned long long));
     CUDA_CHECK(err, "cudaMalloc failed for d_addr_found");
     
@@ -186,10 +188,15 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
     CUDA_CHECK(err, "cudaMemcpy failed for d_client_random");
     err = cudaMemcpy(d_server_random, server_random, 32 * sizeof(unsigned char), cudaMemcpyHostToDevice);
     CUDA_CHECK(err, "cudaMemcpy failed for d_server_random");
-    err = cudaMemcpy(d_aad, aad_bytes, AAD_LENGTH * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    CUDA_CHECK(err, "cudaMemcpy failed for d_aad");
-    err = cudaMemcpy(d_chiphertext, ciphertext_bytes, ciphertext_len * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    CUDA_CHECK(err, "cudaMemcpy failed for d_chiphertext");
+
+    // Copy AAD and ciphertext to constant memory
+    err = cudaMemcpyToSymbol(d_tls12_const_aad, aad_bytes, AAD_LENGTH * sizeof(unsigned char));
+    CUDA_CHECK(err, "cudaMemcpyToSymbol failed for d_tls12_const_aad");
+    err = cudaMemcpyToSymbol(d_tls12_const_ciphertext, ciphertext_bytes, ciphertext_len * sizeof(unsigned char));
+    CUDA_CHECK(err, "cudaMemcpyToSymbol failed for d_tls12_const_ciphertext");
+    short h_ciphertext_len = (short)ciphertext_len;
+    err = cudaMemcpyToSymbol(d_tls12_const_ciphertext_length, &h_ciphertext_len, sizeof(short));
+    CUDA_CHECK(err, "cudaMemcpyToSymbol failed for d_tls12_const_ciphertext_length");
 
     err = cudaMemset(d_addr_found, 0xFF, sizeof(unsigned long long));
     CUDA_CHECK(err, "cudaMemset failed for d_addr_found");
@@ -226,8 +233,8 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
     printf("\rmaster secret scan 0%%");
     for (int i = 0; i < 100; i++) {
         search_kernel<<<num_blocks, max_threads_per_block>>>(d_haystack, haystack_length, i,
-            d_client_random, d_server_random, target_seq_num, d_aad, AAD_LENGTH,
-            d_chiphertext, ciphertext_len, entropyThreshold, d_addr_found);
+            d_client_random, d_server_random, target_seq_num,
+            entropyThreshold, d_addr_found);
         printf("\rmaster secret scan %d%%", i);
         cudaDeviceSynchronize();
         err = cudaGetLastError();
@@ -253,8 +260,6 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
     cudaFree(d_haystack);
     cudaFree(d_client_random);
     cudaFree(d_server_random);
-    cudaFree(d_aad);
-    cudaFree(d_chiphertext);
     cudaFree(d_addr_found);
 
     free(ciphertext_bytes);

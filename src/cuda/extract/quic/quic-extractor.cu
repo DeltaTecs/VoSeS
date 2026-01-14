@@ -8,6 +8,11 @@
 
 #define QUIC_APP_TRAFFIC_SECRET_0_LEN_SHA256 32
 #define QUIC_APP_TRAFFIC_SECRET_0_LEN_SHA384 48
+#define QUIC_MAX_PACKET_LEN 16384
+
+__device__ __constant__ unsigned char d_const_packet[QUIC_MAX_PACKET_LEN];
+__device__ __constant__ short d_const_packet_length;
+__device__ __constant__ short d_const_pn_offset;
 
 #define CUDA_CHECK(err, msg)            \
     do {                                \
@@ -18,8 +23,7 @@
     } while (0)
 
 __global__ void quic_app_traffic_secret_0_scan_gcm128_sha256_kernel(const unsigned char* d_haystack, const uint64_t haystack_length,
-                                                            const char percentile, const unsigned char* d_packet,
-                                                            short packet_length, short pn_offset,
+                                                            const char percentile,
                                                             const float entropyThreshold, unsigned long long* d_addr_found) {
 
     const unsigned long thread_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -38,7 +42,7 @@ __global__ void quic_app_traffic_secret_0_scan_gcm128_sha256_kernel(const unsign
     }
 
     bool isMatch = cuda_match_quic_app_traffic_secret_0_gcm128_sha256(candidate, QUIC_APP_TRAFFIC_SECRET_0_LEN_SHA256,
-                                                                      d_packet, packet_length, pn_offset);
+                                                                      d_const_packet, d_const_packet_length, d_const_pn_offset);
     if (isMatch) {
         printf("\nMatch has entropy %f\n", entropy);
         *d_addr_found = percentile_index;
@@ -46,8 +50,7 @@ __global__ void quic_app_traffic_secret_0_scan_gcm128_sha256_kernel(const unsign
 }
 
 __global__ void quic_app_traffic_secret_0_scan_gcm256_sha384_kernel(const unsigned char* d_haystack, const uint64_t haystack_length,
-                                                            const char percentile, const unsigned char* d_packet,
-                                                            short packet_length, short pn_offset,
+                                                            const char percentile,
                                                             const float entropyThreshold, unsigned long long* d_addr_found) {
 
     const unsigned long thread_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -66,7 +69,7 @@ __global__ void quic_app_traffic_secret_0_scan_gcm256_sha384_kernel(const unsign
     }
 
     bool isMatch = cuda_match_quic_app_traffic_secret_0_gcm256_sha384(candidate, QUIC_APP_TRAFFIC_SECRET_0_LEN_SHA384,
-                                                                      d_packet, packet_length, pn_offset);
+                                                                      d_const_packet, d_const_packet_length, d_const_pn_offset);
     if (isMatch) {
         printf("\nMatch has entropy %f\n", entropy);
         *d_addr_found = percentile_index;
@@ -79,8 +82,8 @@ __host__ unsigned long long quic_app_traffic_secret_0_helper(const unsigned char
                                                              const float entropyThreshold, const bool client,
                                                              const int secret_len,
                                                              void (*search_kernel) (const unsigned char*, const uint64_t,
-                                                                     const char, const unsigned char*,
-                                                                     short, short, const float, unsigned long long*)) {
+                                                                     const char,
+                                                                     const float, unsigned long long*)) {
 
     if (packet_length <= 0) {
         printf("ERROR QUIC packet is empty.\n");
@@ -90,25 +93,33 @@ __host__ unsigned long long quic_app_traffic_secret_0_helper(const unsigned char
         printf("ERROR QUIC pn_offset %d is out of bounds for packet length %d.\n", pn_offset, packet_length);
         return k_addr_not_found;
     }
+    if (packet_length > QUIC_MAX_PACKET_LEN) {
+        printf("ERROR QUIC packet length %d exceeds constant memory limit %d.\n", packet_length, QUIC_MAX_PACKET_LEN);
+        return k_addr_not_found;
+    }
 
     unsigned long long h_addr_found = k_addr_not_found;
 
     unsigned char *d_haystack = nullptr;
-    unsigned char* d_packet = nullptr;
     unsigned long long* d_addr_found = nullptr;
 
     cudaError_t err;
     err = cudaMalloc((void**)&d_haystack, haystack_length);
     CUDA_CHECK(err, "cudaMalloc failed for d_haystack");
-    err = cudaMalloc((void**)&d_packet, packet_length);
-    CUDA_CHECK(err, "cudaMalloc failed for d_packet");
     err = cudaMalloc((void**)&d_addr_found, sizeof(unsigned long long));
     CUDA_CHECK(err, "cudaMalloc failed for d_addr_found");
 
     err = cudaMemcpy(d_haystack, haystack, haystack_length, cudaMemcpyHostToDevice);
     CUDA_CHECK(err, "cudaMemcpy failed for d_haystack");
-    err = cudaMemcpy(d_packet, packet, packet_length * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    CUDA_CHECK(err, "cudaMemcpy failed for d_packet");
+
+    // Copy packet data to constant memory
+    err = cudaMemcpyToSymbol(d_const_packet, packet, packet_length * sizeof(unsigned char));
+    CUDA_CHECK(err, "cudaMemcpyToSymbol failed for d_const_packet");
+    short h_packet_length = (short)packet_length;
+    err = cudaMemcpyToSymbol(d_const_packet_length, &h_packet_length, sizeof(short));
+    CUDA_CHECK(err, "cudaMemcpyToSymbol failed for d_const_packet_length");
+    err = cudaMemcpyToSymbol(d_const_pn_offset, &pn_offset, sizeof(short));
+    CUDA_CHECK(err, "cudaMemcpyToSymbol failed for d_const_pn_offset");
 
     err = cudaMemset(d_addr_found, 0xFF, sizeof(unsigned long long));
     CUDA_CHECK(err, "cudaMemset failed for d_addr_found");
@@ -145,7 +156,7 @@ __host__ unsigned long long quic_app_traffic_secret_0_helper(const unsigned char
         printf("\rapp traffic secret scan %d%%", i);
         fflush(stdout);
         search_kernel<<<num_blocks, max_threads_per_block>>>(d_haystack, haystack_length, i,
-            d_packet, packet_length, pn_offset, entropyThreshold, d_addr_found);
+            entropyThreshold, d_addr_found);
         cudaDeviceSynchronize();
         err = cudaGetLastError();
         if (err != cudaSuccess) printf("Kernel launch error: %s\n", cudaGetErrorString(err));
@@ -168,7 +179,6 @@ __host__ unsigned long long quic_app_traffic_secret_0_helper(const unsigned char
     }
 
     cudaFree(d_haystack);
-    cudaFree(d_packet);
     cudaFree(d_addr_found);
 
     if (h_addr_found != k_addr_not_found && h_addr_found + secret_len <= haystack_length) {

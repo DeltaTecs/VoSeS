@@ -12,8 +12,13 @@ set(VOS_CUDA_SOURCES
     src/cuda/crypto/kdf.cu
     src/cuda/crypto/gcm128.cu
     src/cuda/crypto/gcm256.cu
-    src/cuda/extract/tls-gcm-extract.cu
-    src/cuda/extract/extractor.cu
+    src/cuda/extract/common/extractor-common.cu
+    src/cuda/extract/tls12/tls12-gcm-extract.cu
+    src/cuda/extract/tls12/tls12-extractor.cu
+    src/cuda/extract/tls13/tls13-gcm-extract.cu
+    src/cuda/extract/tls13/tls13-extractor.cu
+    src/cuda/extract/quic/quic-gcm-extract.cu
+    src/cuda/extract/quic/quic-extractor.cu
 )
 
 # Find and enable OpenMP

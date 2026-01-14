@@ -10,6 +10,11 @@
 #define TLS13_APP_TRAFFIC_SECRET_0_LEN_SHA256 32
 #define TLS13_APP_TRAFFIC_SECRET_0_LEN_SHA384 48
 #define TLS13_AAD_LEN 5
+#define TLS13_MAX_CIPHERTEXT_LEN 16384
+
+__device__ __constant__ unsigned char d_tls13_const_aad[TLS13_AAD_LEN];
+__device__ __constant__ unsigned char d_tls13_const_ciphertext[TLS13_MAX_CIPHERTEXT_LEN];
+__device__ __constant__ short d_tls13_const_ciphertext_length;
 
 #define CUDA_CHECK(err, msg)            \
     do {                                \
@@ -21,8 +26,7 @@
 
 __global__ void tls13_app_traffic_secret_0_scan_gcm128_sha256_kernel(const unsigned char* d_haystack, const uint64_t haystack_length,
                                                             const char percentile, uint64_t seq_num,
-                                                            unsigned char* d_aad, short aad_length, unsigned char* d_chiphertext,
-                                                            short ciphertext_length, const float entropyThreshold, unsigned long long* d_addr_found) {
+                                                            const float entropyThreshold, unsigned long long* d_addr_found) {
 
     const unsigned long thread_index = blockIdx.x * blockDim.x + threadIdx.x;
     const uint64_t percentile_index = (percentile * blockDim.x * gridDim.x + thread_index) * d_memory_alignment;
@@ -40,8 +44,8 @@ __global__ void tls13_app_traffic_secret_0_scan_gcm128_sha256_kernel(const unsig
     }
 
     bool isMatch = cuda_match_app_traffic_secret_0_gcm128_sha256(candidate, TLS13_APP_TRAFFIC_SECRET_0_LEN_SHA256,
-                                                                 seq_num, d_aad, aad_length,
-                                                                 d_chiphertext, ciphertext_length);
+                                                                 seq_num, d_tls13_const_aad, TLS13_AAD_LEN,
+                                                                 d_tls13_const_ciphertext, d_tls13_const_ciphertext_length);
     if (isMatch) {
         printf("\nMatch has entropy %f\n", entropy);
         *d_addr_found = percentile_index;
@@ -50,8 +54,7 @@ __global__ void tls13_app_traffic_secret_0_scan_gcm128_sha256_kernel(const unsig
 
 __global__ void tls13_app_traffic_secret_0_scan_gcm256_sha384_kernel(const unsigned char* d_haystack, const uint64_t haystack_length,
                                                             const char percentile, uint64_t seq_num,
-                                                            unsigned char* d_aad, short aad_length, unsigned char* d_chiphertext,
-                                                            short ciphertext_length, const float entropyThreshold, unsigned long long* d_addr_found) {
+                                                            const float entropyThreshold, unsigned long long* d_addr_found) {
 
     const unsigned long thread_index = blockIdx.x * blockDim.x + threadIdx.x;
     const uint64_t percentile_index = (percentile * blockDim.x * gridDim.x + thread_index) * d_memory_alignment;
@@ -69,8 +72,8 @@ __global__ void tls13_app_traffic_secret_0_scan_gcm256_sha384_kernel(const unsig
     }
 
     bool isMatch = cuda_match_app_traffic_secret_0_gcm256_sha384(candidate, TLS13_APP_TRAFFIC_SECRET_0_LEN_SHA384,
-                                                                 seq_num, d_aad, aad_length,
-                                                                 d_chiphertext, ciphertext_length);
+                                                                 seq_num, d_tls13_const_aad, TLS13_AAD_LEN,
+                                                                 d_tls13_const_ciphertext, d_tls13_const_ciphertext_length);
     if (isMatch) {
         printf("\nMatch has entropy %f\n", entropy);
         *d_addr_found = percentile_index;
@@ -84,8 +87,7 @@ __host__ unsigned long long tls13_app_traffic_secret_0_helper(const unsigned cha
                                                              const int secret_len,
                                                              void (*search_kernel) (const unsigned char*, const uint64_t,
                                                                      const char, uint64_t,
-                                                                     unsigned char*, short, unsigned char*,
-                                                                     short, const float, unsigned long long*)) {
+                                                                     const float, unsigned long long*)) {
 
     if (app_data_record_length < TLS13_AAD_LEN) {
         printf("ERROR app_data_record too short for TLS 1.3 header.\n");
@@ -111,32 +113,37 @@ __host__ unsigned long long tls13_app_traffic_secret_0_helper(const unsigned cha
         return k_addr_not_found;
     }
 
+    if (ciphertext_len > TLS13_MAX_CIPHERTEXT_LEN) {
+        printf("ERROR ciphertext length %d exceeds constant memory limit %d.\n", ciphertext_len, TLS13_MAX_CIPHERTEXT_LEN);
+        free(aad_bytes);
+        return k_addr_not_found;
+    }
+
     unsigned char* ciphertext_bytes = (unsigned char*) malloc(ciphertext_len);
     memcpy(ciphertext_bytes, app_data_record + TLS13_AAD_LEN, ciphertext_len);
 
     unsigned long long h_addr_found = k_addr_not_found;
 
     unsigned char *d_haystack = nullptr;
-    unsigned char* d_aad = nullptr;
-    unsigned char* d_chiphertext = nullptr;
     unsigned long long* d_addr_found = nullptr;
 
     cudaError_t err;
     err = cudaMalloc((void**)&d_haystack, haystack_length);
     CUDA_CHECK(err, "cudaMalloc failed for d_haystack");
-    err = cudaMalloc((void**)&d_aad, TLS13_AAD_LEN);
-    CUDA_CHECK(err, "cudaMalloc failed for d_aad");
-    err = cudaMalloc((void**)&d_chiphertext, ciphertext_len);
-    CUDA_CHECK(err, "cudaMalloc failed for d_chiphertext");
     err = cudaMalloc((void**)&d_addr_found, sizeof(unsigned long long));
     CUDA_CHECK(err, "cudaMalloc failed for d_addr_found");
 
     err = cudaMemcpy(d_haystack, haystack, haystack_length, cudaMemcpyHostToDevice);
     CUDA_CHECK(err, "cudaMemcpy failed for d_haystack");
-    err = cudaMemcpy(d_aad, aad_bytes, TLS13_AAD_LEN * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    CUDA_CHECK(err, "cudaMemcpy failed for d_aad");
-    err = cudaMemcpy(d_chiphertext, ciphertext_bytes, ciphertext_len * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    CUDA_CHECK(err, "cudaMemcpy failed for d_chiphertext");
+
+    // Copy AAD and ciphertext to constant memory
+    err = cudaMemcpyToSymbol(d_tls13_const_aad, aad_bytes, TLS13_AAD_LEN * sizeof(unsigned char));
+    CUDA_CHECK(err, "cudaMemcpyToSymbol failed for d_tls13_const_aad");
+    err = cudaMemcpyToSymbol(d_tls13_const_ciphertext, ciphertext_bytes, ciphertext_len * sizeof(unsigned char));
+    CUDA_CHECK(err, "cudaMemcpyToSymbol failed for d_tls13_const_ciphertext");
+    short h_ciphertext_len = (short)ciphertext_len;
+    err = cudaMemcpyToSymbol(d_tls13_const_ciphertext_length, &h_ciphertext_len, sizeof(short));
+    CUDA_CHECK(err, "cudaMemcpyToSymbol failed for d_tls13_const_ciphertext_length");
 
     err = cudaMemset(d_addr_found, 0xFF, sizeof(unsigned long long));
     CUDA_CHECK(err, "cudaMemset failed for d_addr_found");
@@ -173,7 +180,7 @@ __host__ unsigned long long tls13_app_traffic_secret_0_helper(const unsigned cha
         printf("\rapp traffic secret scan %d%%", i);
         fflush(stdout);
         search_kernel<<<num_blocks, max_threads_per_block>>>(d_haystack, haystack_length, i,
-            seq_num, d_aad, TLS13_AAD_LEN, d_chiphertext, ciphertext_len, entropyThreshold, d_addr_found);
+            seq_num, entropyThreshold, d_addr_found);
         cudaDeviceSynchronize();
         err = cudaGetLastError();
         if (err != cudaSuccess) printf("Kernel launch error: %s\n", cudaGetErrorString(err));
@@ -196,8 +203,6 @@ __host__ unsigned long long tls13_app_traffic_secret_0_helper(const unsigned cha
     }
 
     cudaFree(d_haystack);
-    cudaFree(d_aad);
-    cudaFree(d_chiphertext);
     cudaFree(d_addr_found);
 
     free(ciphertext_bytes);
