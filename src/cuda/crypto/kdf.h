@@ -64,3 +64,7 @@ __device__ void cuda_derive_quic_keys_256(const unsigned char *d_secret, short d
  *   d_nonce    - output buffer (must be at least 12 bytes)
  */
 __device__ void cuda_build_tls12_aes_gcm_nonce(uint64_t seq_num, const unsigned char d_fixed_iv[4], unsigned char d_nonce[12]);
+
+// TLS 1.2 AES-GCM record uses an 8-byte explicit nonce (aka nonce_explicit) carried in the record
+// fragment, concatenated to the 4-byte fixed IV derived from the key block.
+__device__ void cuda_build_tls12_aes_gcm_nonce_from_explicit(const unsigned char d_explicit_nonce[8], const unsigned char d_fixed_iv[4], unsigned char d_nonce[12]);

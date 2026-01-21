@@ -74,6 +74,14 @@ __global__ void tls12_master_secret_scan_gcm128_sha256_kernel(const unsigned cha
                                                                        finished_plain, finished_plain_length,
                                                                        d_tls12_const_ciphertext, d_tls12_const_ciphertext_length);
     if (isMatch) {
+        // Verify GCM tag to confirm the match
+        bool tagVerified = cuda_match_master_secret_gcm128_sha256(candidate, TLS_MASTER_SECRET_LEN,
+                                                                   d_client_random, d_server_random, seq_num,
+                                                                   d_tls12_const_aad, TLS12_AAD_LENGTH,
+                                                                   d_tls12_const_ciphertext, d_tls12_const_ciphertext_length);
+        if (!tagVerified) {
+            return;
+        }
         printf("\nMatch has entropy %f\n", entropy);
         print_found_secret(candidate, d_client_random, percentile_index);
         *d_addr_found = percentile_index;
@@ -108,6 +116,14 @@ __global__ void tls12_master_secret_scan_gcm256_sha384_kernel(const unsigned cha
                                                                        finished_plain, finished_plain_length,
                                                                        d_tls12_const_ciphertext, d_tls12_const_ciphertext_length);
     if (isMatch) {
+        // Verify GCM tag to confirm the match
+        bool tagVerified = cuda_match_master_secret_gcm256_sha384(candidate, TLS_MASTER_SECRET_LEN,
+                                                                   d_client_random, d_server_random, seq_num,
+                                                                   d_tls12_const_aad, TLS12_AAD_LENGTH,
+                                                                   d_tls12_const_ciphertext, d_tls12_const_ciphertext_length);
+        if (!tagVerified) {
+            return;
+        }
         printf("\nMatch has entropy %f\n", entropy);
         print_found_secret(candidate, d_client_random, percentile_index);
         *d_addr_found = percentile_index;
@@ -135,9 +151,22 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
 
     const short AAD_LENGTH = 13;
     unsigned char* aad_bytes = (unsigned char*) malloc(AAD_LENGTH);
-    uint64_t target_seq_num;
+
+    // TLS 1.2 AEAD additional data:
+    //   seq_num(8) || content_type(1) || version(2) || length(2)
+    // For TLS (non-DTLS) Finished after ChangeCipherSpec, the record sequence number is 0.
+    // Some older inputs include an extra 8-byte seq_num injected after the 5-byte TLS header.
+    uint64_t target_seq_num = 0;
+
+    const unsigned char* record_fragment = nullptr;
+    int record_fragment_len = 0;
+
     if (dtls) {
+        // DTLS embeds epoch/sequence in the record header, but this code path historically expects an
+        // extra 8 bytes to be present after the 13-byte DTLS header.
         memcpy(&target_seq_num, client_finished_msg + 3, 8);
+        record_fragment = client_finished_msg + AAD_LENGTH + 8;
+        record_fragment_len = client_finished_length - (AAD_LENGTH + 8);
 
         memcpy(aad_bytes, &target_seq_num, 8);
         aad_bytes[ 8] = client_finished_msg[0];
@@ -146,7 +175,37 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
         aad_bytes[11] = 0x00;
         aad_bytes[12] = 0x18;
     } else {
-        memcpy(&target_seq_num, client_finished_msg + 5, 8);
+        // TLS record header is 5 bytes: type(1) version(2) length(2)
+        if (client_finished_length < 5) {
+            printf("ERROR finished message too short.\n");
+            free(aad_bytes);
+            return k_addr_not_found;
+        }
+
+        const int tls_record_len = ((int)client_finished_msg[3] << 8) | (int)client_finished_msg[4];
+        const int tls_header_len = 5;
+
+        // Format A: raw TLS record: header(5) || fragment(tls_record_len)
+        // Format B: header(5) || seq_num(8) || fragment(tls_record_len)
+        if (client_finished_length == tls_header_len + tls_record_len) {
+            // No injected sequence number; for Finished, default seq_num to 0.
+            record_fragment = client_finished_msg + tls_header_len;
+            record_fragment_len = tls_record_len;
+        } else if (client_finished_length == tls_header_len + 8 + tls_record_len) {
+            memcpy(&target_seq_num, client_finished_msg + tls_header_len, 8);
+            record_fragment = client_finished_msg + tls_header_len + 8;
+            record_fragment_len = tls_record_len;
+        } else {
+            // Fallback to legacy behavior: assume seq_num is present at +5 and fragment starts at +13.
+            if (client_finished_length < AAD_LENGTH) {
+                printf("ERROR finished message has unexpected length.\n");
+                free(aad_bytes);
+                return k_addr_not_found;
+            }
+            memcpy(&target_seq_num, client_finished_msg + tls_header_len, 8);
+            record_fragment = client_finished_msg + AAD_LENGTH;
+            record_fragment_len = client_finished_length - AAD_LENGTH;
+        }
 
         memcpy(aad_bytes, &target_seq_num, 8);
         aad_bytes[ 8] = client_finished_msg[0];
@@ -155,15 +214,19 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
         aad_bytes[11] = 0x00;
         aad_bytes[12] = 0x10;
     }
-    
-    const int ciphertext_len = client_finished_length - AAD_LENGTH - (dtls ? 8 : 0);
-    if (ciphertext_len > TLS12_MAX_CIPHERTEXT_LEN) {
-        printf("ERROR ciphertext length %d exceeds constant memory limit %d.\n", ciphertext_len, TLS12_MAX_CIPHERTEXT_LEN);
+
+    if (record_fragment_len <= 0) {
+        printf("ERROR invalid ciphertext/fragment length %d.\n", record_fragment_len);
         free(aad_bytes);
         return k_addr_not_found;
     }
-    unsigned char* ciphertext_bytes = (unsigned char*) malloc(ciphertext_len);
-    memcpy(ciphertext_bytes, client_finished_msg + AAD_LENGTH + (dtls ? 8 : 0), ciphertext_len);
+    if (record_fragment_len > TLS12_MAX_CIPHERTEXT_LEN) {
+        printf("ERROR ciphertext length %d exceeds constant memory limit %d.\n", record_fragment_len, TLS12_MAX_CIPHERTEXT_LEN);
+        free(aad_bytes);
+        return k_addr_not_found;
+    }
+    unsigned char* ciphertext_bytes = (unsigned char*) malloc(record_fragment_len);
+    memcpy(ciphertext_bytes, record_fragment, record_fragment_len);
 
     unsigned long long h_addr_found = k_addr_not_found;
 
@@ -192,9 +255,9 @@ __host__ unsigned long long tls12_master_secret_helper(const unsigned char* hays
     // Copy AAD and ciphertext to constant memory
     err = cudaMemcpyToSymbol(d_tls12_const_aad, aad_bytes, AAD_LENGTH * sizeof(unsigned char));
     CUDA_CHECK(err, "cudaMemcpyToSymbol failed for d_tls12_const_aad");
-    err = cudaMemcpyToSymbol(d_tls12_const_ciphertext, ciphertext_bytes, ciphertext_len * sizeof(unsigned char));
+    err = cudaMemcpyToSymbol(d_tls12_const_ciphertext, ciphertext_bytes, record_fragment_len * sizeof(unsigned char));
     CUDA_CHECK(err, "cudaMemcpyToSymbol failed for d_tls12_const_ciphertext");
-    short h_ciphertext_len = (short)ciphertext_len;
+    short h_ciphertext_len = (short)record_fragment_len;
     err = cudaMemcpyToSymbol(d_tls12_const_ciphertext_length, &h_ciphertext_len, sizeof(short));
     CUDA_CHECK(err, "cudaMemcpyToSymbol failed for d_tls12_const_ciphertext_length");
 

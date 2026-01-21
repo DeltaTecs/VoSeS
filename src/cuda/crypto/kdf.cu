@@ -446,3 +446,10 @@ __device__ void cuda_build_tls12_aes_gcm_nonce(uint64_t seq_num, const unsigned 
         d_nonce[4 + i] = (unsigned char)((seq_num >> (8 * i)) & 0xff);
     }
 }
+
+__device__ void cuda_build_tls12_aes_gcm_nonce_from_explicit(const unsigned char d_explicit_nonce[8], const unsigned char d_fixed_iv[4], unsigned char d_nonce[12]) {
+    // First 4 bytes: fixed IV from key block
+    cuda_array_copy(d_nonce, d_fixed_iv, 4);
+    // Next 8 bytes: explicit nonce from record fragment (as-is on the wire)
+    cuda_array_copy(d_nonce + 4, d_explicit_nonce, 8);
+}

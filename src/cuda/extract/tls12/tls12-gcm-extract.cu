@@ -12,6 +12,10 @@ __device__ bool cuda_match_master_secret_gcm128_sha256(const unsigned char* d_ma
                                         unsigned char d_client_random[32], unsigned char d_server_random[32], uint64_t seq_num,
                                         unsigned char* d_aad, short aad_length, unsigned char* d_chiphertext, short ciphertext_length) {
 
+    // TLS 1.2 AES-GCM record fragment layout:
+    //   nonce_explicit(8) || ciphertext || tag(16)
+    if (ciphertext_length < 8 + 16) return false;
+
     unsigned char l_client_write_key[KEY_LEN_128];
     unsigned char l_server_write_key[KEY_LEN_128];
     unsigned char l_client_iv[IV_LEN];
@@ -23,9 +27,10 @@ __device__ bool cuda_match_master_secret_gcm128_sha256(const unsigned char* d_ma
                             l_client_write_key, l_server_write_key,
                             l_client_iv, l_server_iv);
 
-    cuda_build_tls12_aes_gcm_nonce(seq_num, l_client_iv, l_client_nonce);
+    // Build nonce as fixed_iv(4) || nonce_explicit(8)
+    cuda_build_tls12_aes_gcm_nonce_from_explicit(d_chiphertext, l_client_iv, l_client_nonce);
 
-    return cuda_GCM_128_verify_tag(d_chiphertext, ciphertext_length,
+    return cuda_GCM_128_verify_tag(d_chiphertext + 8, ciphertext_length - 8,
                                     d_aad, aad_length,
                                     l_client_nonce, l_client_write_key);
  }
@@ -34,6 +39,8 @@ __device__ bool cuda_match_master_secret_gcm128_sha256(const unsigned char* d_ma
                                         unsigned char d_client_random[32], unsigned char d_server_random[32], uint64_t seq_num,
                                         unsigned char* d_plaintext, short plaintext_length, unsigned char* d_chiphertext, short ciphertext_length) {
 
+    if (ciphertext_length < 8 + 16) return false;
+
     unsigned char l_client_write_key[KEY_LEN_128];
     unsigned char l_server_write_key[KEY_LEN_128];
     unsigned char l_client_iv[IV_LEN];
@@ -45,9 +52,9 @@ __device__ bool cuda_match_master_secret_gcm128_sha256(const unsigned char* d_ma
                             l_client_write_key, l_server_write_key,
                             l_client_iv, l_server_iv);
 
-    cuda_build_tls12_aes_gcm_nonce(seq_num, l_client_iv, l_client_nonce);
+    cuda_build_tls12_aes_gcm_nonce_from_explicit(d_chiphertext, l_client_iv, l_client_nonce);
 
-    return cuda_GCM_128_cmp_plaintxt_block(d_chiphertext, ciphertext_length,
+    return cuda_GCM_128_cmp_plaintxt_block(d_chiphertext + 8, ciphertext_length - 8,
                                     d_plaintext, plaintext_length,
                                     l_client_nonce, l_client_write_key);
  }
@@ -56,6 +63,8 @@ __device__ bool cuda_match_master_secret_gcm128_sha256(const unsigned char* d_ma
                                         unsigned char d_client_random[32], unsigned char d_server_random[32], uint64_t seq_num,
                                         unsigned char* d_aad, short aad_length, unsigned char* d_chiphertext, short ciphertext_length) {
 
+    if (ciphertext_length < 8 + 16) return false;
+
     unsigned char l_client_write_key[KEY_LEN_256];
     unsigned char l_server_write_key[KEY_LEN_256];
     unsigned char l_client_iv[IV_LEN];
@@ -67,9 +76,9 @@ __device__ bool cuda_match_master_secret_gcm128_sha256(const unsigned char* d_ma
                             l_client_write_key, l_server_write_key,
                             l_client_iv, l_server_iv);
 
-    cuda_build_tls12_aes_gcm_nonce(seq_num, l_client_iv, l_client_nonce);
+    cuda_build_tls12_aes_gcm_nonce_from_explicit(d_chiphertext, l_client_iv, l_client_nonce);
 
-    return cuda_GCM_256_verify_tag(d_chiphertext, ciphertext_length,
+    return cuda_GCM_256_verify_tag(d_chiphertext + 8, ciphertext_length - 8,
                                     d_aad, aad_length,
                                     l_client_nonce, l_client_write_key);
  }
@@ -78,6 +87,8 @@ __device__ bool cuda_match_master_secret_gcm128_sha256(const unsigned char* d_ma
                                         unsigned char d_client_random[32], unsigned char d_server_random[32], uint64_t seq_num,
                                         unsigned char* d_plaintext, short plaintext_length, unsigned char* d_chiphertext, short ciphertext_length) {
 
+        if (ciphertext_length < 8 + 16) return false;
+
     unsigned char l_client_write_key[KEY_LEN_256];
     unsigned char l_server_write_key[KEY_LEN_256];
     unsigned char l_client_iv[IV_LEN];
@@ -89,9 +100,9 @@ __device__ bool cuda_match_master_secret_gcm128_sha256(const unsigned char* d_ma
                             l_client_write_key, l_server_write_key,
                             l_client_iv, l_server_iv);
 
-    cuda_build_tls12_aes_gcm_nonce(seq_num, l_client_iv, l_client_nonce);
+    cuda_build_tls12_aes_gcm_nonce_from_explicit(d_chiphertext, l_client_iv, l_client_nonce);
 
-    return cuda_GCM_256_cmp_plaintxt_block(d_chiphertext, ciphertext_length,
+    return cuda_GCM_256_cmp_plaintxt_block(d_chiphertext + 8, ciphertext_length - 8,
                                     d_plaintext, plaintext_length,
                                     l_client_nonce, l_client_write_key);
  }
