@@ -1288,6 +1288,108 @@ bool test_tls13_server_traffic_secret_scan_record_user_case() {
 }
 
 
+bool test_tls12_master_secret_gcm128_sha256_scan() {
+    // Test case for TLS 1.2 AES-128-GCM with SHA-256
+    std::string master_secret = "6fdafd4dc2a2631af0d8ba952eb7a192b17591ea053b7cb98920747ccd2d8cb82cf3de0cd15a580a600acb26d4b8c04b";
+    std::string client_random = "4c2fb2a35c51ce12b33ee73748501238e67043b190545c50c0802ac37d68a104";
+    std::string server_random = "b5430dfdb6f6fb7e1e958c7b2a800795ebd8925d0447e6685b8c85714cf0cd18";
+    std::string client_finished = "160303002800000000000000004d0b39c8d79ce751d3f1223af2f55e825f3244f35ebcd5b41ecf23e095374bb8";
+
+    std::vector<unsigned char> master_secret_bytes = hexStringToByteArray(master_secret);
+    std::vector<unsigned char> client_random_bytes = hexStringToByteArray(client_random);
+    std::vector<unsigned char> server_random_bytes = hexStringToByteArray(server_random);
+    std::vector<unsigned char> client_finished_bytes = hexStringToByteArray(client_finished);
+
+    // 1MB haystack
+    uint64_t haystack_size = 1024 * 1024;
+    std::vector<unsigned char> haystack(haystack_size);
+
+    // Fill with random data
+    for (size_t i = 0; i < haystack_size; ++i) {
+        haystack[i] = rand() % 256;
+    }
+
+    // Insert master secret at a random position
+    uint64_t secret_len = master_secret_bytes.size();
+    uint64_t max_pos = haystack_size - secret_len;
+    uint64_t secret_pos = (rand() % (max_pos - 1)) + 1;
+
+    for (size_t i = 0; i < secret_len; ++i) {
+        haystack[secret_pos + i] = master_secret_bytes[i];
+    }
+
+    set_memory_alignment(1);
+
+    unsigned long long found_pos = tls12_master_secret_gcm_128_sha_256_scan(
+        haystack.data(), haystack_size,
+        client_random_bytes.data(), server_random_bytes.data(),
+        client_finished_bytes.data(), static_cast<int>(client_finished_bytes.size()),
+        0.0f // entropyThreshold
+    );
+
+    bool success = (found_pos == secret_pos);
+
+    if (!success) {
+        printf("TLS 1.2 master secret GCM128 SHA256 scan test FAIL! Expected %llu, found %llu\n", 
+               (unsigned long long)secret_pos, found_pos);
+    } else {
+        printf("TLS 1.2 master secret GCM128 SHA256 scan test pass. Found at %llu\n", found_pos);
+    }
+
+    return success;
+}
+
+bool test_tls12_master_secret_gcm256_sha384_scan() {
+    // Test case for TLS 1.2 AES-256-GCM with SHA-384
+    std::string master_secret = "9becb6ec75c7c063f551cbaa59e502e74106bbf01a946fd89b7701fa9e107eb68a4ade5ddae0521776bafdf394314124";
+    std::string client_random = "790b0d90abcb59f9763b1399b7c1b3d0636fcbf9dda40f349782d9f11551a413";
+    std::string server_random = "cec48108ad3417956b432014a232cc7edb4aef30a50263134a9df7a0cb8239e0";
+    std::string client_finished = "16030300280000000000000000c5b833d0932257d4601724302ca1d25e167593d50fe8a18ccfe026cb9f415c38";
+
+    std::vector<unsigned char> master_secret_bytes = hexStringToByteArray(master_secret);
+    std::vector<unsigned char> client_random_bytes = hexStringToByteArray(client_random);
+    std::vector<unsigned char> server_random_bytes = hexStringToByteArray(server_random);
+    std::vector<unsigned char> client_finished_bytes = hexStringToByteArray(client_finished);
+
+    // 1MB haystack
+    uint64_t haystack_size = 1024 * 1024;
+    std::vector<unsigned char> haystack(haystack_size);
+
+    // Fill with random data
+    for (size_t i = 0; i < haystack_size; ++i) {
+        haystack[i] = rand() % 256;
+    }
+
+    // Insert master secret at a random position
+    uint64_t secret_len = master_secret_bytes.size();
+    uint64_t max_pos = haystack_size - secret_len;
+    uint64_t secret_pos = (rand() % (max_pos - 1)) + 1;
+
+    for (size_t i = 0; i < secret_len; ++i) {
+        haystack[secret_pos + i] = master_secret_bytes[i];
+    }
+
+    set_memory_alignment(1);
+
+    unsigned long long found_pos = tls12_master_secret_gcm_256_sha_384_scan(
+        haystack.data(), haystack_size,
+        client_random_bytes.data(), server_random_bytes.data(),
+        client_finished_bytes.data(), static_cast<int>(client_finished_bytes.size()),
+        0.0f // entropyThreshold
+    );
+
+    bool success = (found_pos == secret_pos);
+
+    if (!success) {
+        printf("TLS 1.2 master secret GCM256 SHA384 scan test FAIL! Expected %llu, found %llu\n", 
+               (unsigned long long)secret_pos, found_pos);
+    } else {
+        printf("TLS 1.2 master secret GCM256 SHA384 scan test pass. Found at %llu\n", found_pos);
+    }
+
+    return success;
+}
+
 bool run_tests() {
 
     if (!test_device_availability()) return false;
@@ -1309,6 +1411,8 @@ bool run_tests() {
     bool suc14 = test_tls13_client_traffic_secret_scan_record_user_case();
     bool suc15 = test_tls13_server_traffic_secret_scan_record_user_case();
     bool suc16 = test_quic_app_traffic_secret_gcm128_sha256();
+    bool suc17 = test_tls12_master_secret_gcm128_sha256_scan();
+    bool suc18 = test_tls12_master_secret_gcm256_sha384_scan();
     return suc0 && 
            suc1 && 
            suc2 && 
@@ -1325,5 +1429,7 @@ bool run_tests() {
            suc13 &&
            suc14 &&
            suc15 &&
-           suc16;
+           suc16 &&
+           suc17 &&
+           suc18;
 }
