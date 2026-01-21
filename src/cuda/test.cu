@@ -946,13 +946,27 @@ bool test_full_gcm128() {
 
     const int AAD_LENGTH = 13;
 
-    // extract cipher text
-    const int ciphertext_len = client_finished_bytes.size() - AAD_LENGTH;
-    unsigned char* ciphertext_bytes = (unsigned char*) malloc(ciphertext_len);
-    memcpy(ciphertext_bytes, client_finished_bytes.data() + AAD_LENGTH, ciphertext_len);
+    // client_finished is a TLS record: header(5) || fragment
+    // fragment for TLS 1.2 AES-GCM: nonce_explicit(8) || ciphertext || tag(16)
+    if (client_finished_bytes.size() < 5 + 8 + 16) {
+        printf("full gcm check test FAIL! client_finished too short\n");
+        return false;
+    }
 
+    const int record_len = ((int)client_finished_bytes[3] << 8) | (int)client_finished_bytes[4];
+    if ((int)client_finished_bytes.size() < 5 + record_len) {
+        printf("full gcm check test FAIL! record length mismatch\n");
+        return false;
+    }
+
+    // Extract fragment (includes explicit nonce)
+    const int ciphertext_len = record_len;
+    unsigned char* ciphertext_bytes = (unsigned char*) malloc(ciphertext_len);
+    memcpy(ciphertext_bytes, client_finished_bytes.data() + 5, ciphertext_len);
+
+    // For this vector, seq_num is the record sequence number and matches the explicit nonce.
     uint64_t target_seq_num = 0;
-    memcpy(&target_seq_num, client_finished_bytes.data() + 5, 8);
+    memcpy(&target_seq_num, ciphertext_bytes, 8);
 
     // setup associated data
     unsigned char* aad_bytes = (unsigned char*) malloc(AAD_LENGTH);
