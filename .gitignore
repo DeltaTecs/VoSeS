@@ -1,0 +1,59 @@
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- CMake / build outputs ----
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+Testing/
+
+# Common out-of-tree build dirs
+build/
+build-*/
+cmake-build-*/
+out/
+
+# ---- Compiled objects / binaries ----
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+
+# ---- Dependency / debug files ----
+*.d
+*.pdb
+*.ilk
+*.map
+
+# ---- CUDA / NVCC artifacts ----
+*.ptx
+*.cubin
+*.fatbin
+*.cudafe*
+*.nvcc*
+
+# ---- Project-specific generated output ----
+obj/
+
+# ---- production input
+data/
+
+# If 'voses' is a built binary in the repo root, ignore it.
+# (If it's a source directory/script, remove this line.)
+voses
+run_tests

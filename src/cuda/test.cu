@@ -6,6 +6,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cuda_runtime.h>
+#include <limits>
 #include "crypto/aes128.h"
 #include "crypto/aes256.h"
 #include "crypto/sha256.h"
@@ -14,7 +15,10 @@
 #include "crypto/hmac-sha384.h"
 #include "crypto/kdf.h"
 #include "crypto/gcm128.h"
-#include "extract/tls-gcm-extract.h"
+#include "extract/tls12/tls12-gcm-extract.h"
+#include "extract/tls13/tls13-gcm-extract.h"
+#include "extract/quic/quic-gcm-extract.h"
+#include "extract/extractor.h"
 #include "../host_util.h"
 
 __global__ void full_verify_gcm128(unsigned char* d_result, const unsigned char* d_master_secret, short master_secret_len,
@@ -27,6 +31,28 @@ __global__ void full_verify_gcm128(unsigned char* d_result, const unsigned char*
         bool valid = cuda_match_master_secret_gcm128_sha256(d_master_secret, master_secret_len, d_client_random, d_server_random, seq_num, d_aad, aad_length, d_chiphertext, ciphertext_length);
         *d_result = d_result && valid;
     }
+}
+
+__global__ void tls13_verify_gcm128(unsigned char* d_result, const unsigned char* d_app_traffic_secret_0, short app_traffic_secret_len,
+                                    uint64_t seq_num, unsigned char* d_aad, short aad_length,
+                                    unsigned char* d_chiphertext, short ciphertext_length) {
+    *d_result = cuda_match_app_traffic_secret_0_gcm128_sha256(d_app_traffic_secret_0, app_traffic_secret_len,
+                                                              seq_num, d_aad, aad_length,
+                                                              d_chiphertext, ciphertext_length);
+}
+
+__global__ void tls13_verify_gcm256(unsigned char* d_result, const unsigned char* d_app_traffic_secret_0, short app_traffic_secret_len,
+                                    uint64_t seq_num, unsigned char* d_aad, short aad_length,
+                                    unsigned char* d_chiphertext, short ciphertext_length) {
+    *d_result = cuda_match_app_traffic_secret_0_gcm256_sha384(d_app_traffic_secret_0, app_traffic_secret_len,
+                                                              seq_num, d_aad, aad_length,
+                                                              d_chiphertext, ciphertext_length);
+}
+
+__global__ void quic_verify_gcm128(unsigned char* d_result, const unsigned char* d_app_traffic_secret_0, short app_traffic_secret_len,
+                                   const unsigned char* d_packet, short packet_length, short pn_offset) {
+    *d_result = cuda_match_quic_app_traffic_secret_0_gcm128_sha256(d_app_traffic_secret_0, app_traffic_secret_len,
+                                                                   d_packet, packet_length, pn_offset);
 }
 
 // CUDA kernel that encrypts one AES block using ECB mode
@@ -50,6 +76,97 @@ __global__ void aes256EncryptKernel(uint8_t *d_data, const uint8_t *d_key) {
         cuda_AES256_init_ctx(&ctx, d_key);
         // Encrypt the block (in-place encryption of a 16-byte buffer)
         cuda_AES256_ECB_encrypt(&ctx, d_data);
+    }
+}
+
+__global__ void device_check_kernel(int *d_res) {
+    *d_res = 1337;
+}
+
+bool test_device_availability() {
+    // 1) Explicitly check if the system has at least one CUDA-capable device.
+    int deviceCount = 0;
+    cudaError_t err = cudaGetDeviceCount(&deviceCount);
+    if (err != cudaSuccess) {
+        printf("cudaGetDeviceCount failed: %s\n", cudaGetErrorString(err));
+        return false;
+    }
+    if (deviceCount <= 0) {
+        printf("No CUDA-capable devices detected.\n");
+        return false;
+    }
+
+    // Pick the first device with a non-zero compute capability.
+    int selectedDevice = -1;
+    for (int dev = 0; dev < deviceCount; dev++) {
+        cudaDeviceProp prop;
+        cudaError_t propErr = cudaGetDeviceProperties(&prop, dev);
+        if (propErr != cudaSuccess) {
+            printf("cudaGetDeviceProperties(%d) failed: %s\n", dev, cudaGetErrorString(propErr));
+            continue;
+        }
+
+        printf("CUDA device %d: %s (cc %d.%d, globalMem %zu bytes)\n",
+               dev, prop.name, prop.major, prop.minor, (size_t)prop.totalGlobalMem);
+
+        if (prop.major > 0) {
+            selectedDevice = dev;
+            break;
+        }
+    }
+
+    if (selectedDevice < 0) {
+        printf("CUDA runtime reports devices, but none appear CUDA-capable (compute capability 0.x).\n");
+        return false;
+    }
+
+    err = cudaSetDevice(selectedDevice);
+    if (err != cudaSuccess) {
+        printf("cudaSetDevice(%d) failed: %s\n", selectedDevice, cudaGetErrorString(err));
+        return false;
+    }
+
+    // 2) Functional smoke test: allocate, launch a trivial kernel, sync, memcpy.
+    int *d_res = NULL;
+    int h_res = 0;
+
+    err = cudaMalloc((void**)&d_res, sizeof(int));
+    if (err != cudaSuccess) {
+        printf("CUDA malloc failed: %s\n", cudaGetErrorString(err));
+        return false;
+    }
+
+    device_check_kernel<<<1, 1>>>(d_res);
+    
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("Kernel launch failed: %s\n", cudaGetErrorString(err));
+        cudaFree(d_res);
+        return false;
+    }
+
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        printf("CUDA synchronize failed: %s\n", cudaGetErrorString(err));
+        cudaFree(d_res);
+        return false;
+    }
+
+    err = cudaMemcpy(&h_res, d_res, sizeof(int), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        printf("CUDA memcpy failed: %s\n", cudaGetErrorString(err));
+        cudaFree(d_res);
+        return false;
+    }
+
+    cudaFree(d_res);
+
+    if (h_res == 1337) {
+        printf("Device availability test pass\n");
+        return true;
+    } else {
+        printf("Device availability test FAIL! Expected 1337, got %d\n", h_res);
+        return false;
     }
 }
 
@@ -219,6 +336,32 @@ __global__ void hmac_sha384_test_kernel(unsigned char *d_key, short key_len,
     }
 }
 
+__global__ void tls13_key_derivation_kernel(unsigned char *d_secret, short secret_len,
+                                            unsigned char *d_key, unsigned char *d_iv) {
+    const short key_len = 16;
+    short iter_secret_len = secret_len;
+    for (int i = 0; i < 5000; i++) {
+        cuda_derive_tls13_key_128(d_secret, iter_secret_len, d_key, d_iv);
+        for (int i = 0; i < key_len && i < secret_len; i++) {
+            d_secret[i] ^= d_key[i];
+        }
+        iter_secret_len = key_len;
+    }
+}
+
+__global__ void tls13_key_derivation_256_kernel(unsigned char *d_secret, short secret_len,
+                                                unsigned char *d_key, unsigned char *d_iv) {
+    const short key_len = 32;
+    short iter_secret_len = secret_len;
+    for (int i = 0; i < 5000; i++) {
+        cuda_derive_tls13_key_256(d_secret, iter_secret_len, d_key, d_iv);
+        for (int i = 0; i < key_len && i < secret_len; i++) {
+            d_secret[i] ^= d_key[i];
+        }
+        iter_secret_len = key_len;
+    }
+}
+
 bool test_sha256() {
     unsigned char h_input[36] = { 
         0x2b, 0x7e, 0x15, 0x16,
@@ -378,9 +521,10 @@ bool test_hmac_sha256() {
     cudaMemcpy(h_hmac, d_hmac, hmac_len * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
     bool success = true;
-    for (int i = 0; i < 48; i++) {
+    for (int i = 0; i < hmac_len; i++) {
         if (h_hmac[i] != h_hmac_expected[i]) {
             success = false;
+            break;
         }
     }
     
@@ -465,6 +609,330 @@ bool test_hmac_sha384() {
     return success;
 }
 
+bool test_tls13_key_derivation() {
+    const int secret_len = 32;
+    const int key_len = 16;
+    const int iv_len = 12;
+
+    unsigned char h_secret[secret_len] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+    };
+    // Generated via Python HKDF-Expand-Label (SHA-256) for secret 0x00..0x1f
+    // with 5000 iterations updating secret ^= key each round (first 16 bytes).
+    unsigned char h_expected_key[key_len] = {
+        0x5e, 0x14, 0xac, 0x0d, 0xf2, 0x21, 0x62, 0x6e,
+        0x37, 0x96, 0x2b, 0xd4, 0x56, 0x85, 0x74, 0xf4
+    };
+    unsigned char h_expected_iv[iv_len] = {
+        0xce, 0xee, 0xde, 0x3f, 0x64, 0x2f, 0x84, 0x22,
+        0x5d, 0x4f, 0xba, 0x15
+    };
+    unsigned char h_key[key_len];
+    unsigned char h_iv[iv_len];
+
+    unsigned char *d_secret = NULL;
+    unsigned char *d_key = NULL;
+    unsigned char *d_iv = NULL;
+
+    cudaMalloc((void**)&d_secret, secret_len * sizeof(unsigned char));
+    cudaMalloc((void**)&d_key, key_len * sizeof(unsigned char));
+    cudaMalloc((void**)&d_iv, iv_len * sizeof(unsigned char));
+    cudaMemcpy(d_secret, h_secret, secret_len * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
+    tls13_key_derivation_kernel<<<1, 1>>>(d_secret, secret_len, d_key, d_iv);
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    float elapsedTime;
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    printf("TLS 1.3 key derivation cuda runtime: %f ms\n", elapsedTime);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    cudaMemcpy(h_key, d_key, key_len * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_iv, d_iv, iv_len * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+
+    bool success = true;
+    for (int i = 0; i < key_len; i++) {
+        if (h_key[i] != h_expected_key[i]) {
+            success = false;
+            break;
+        }
+    }
+    if (success) {
+        for (int i = 0; i < iv_len; i++) {
+            if (h_iv[i] != h_expected_iv[i]) {
+                success = false;
+                break;
+            }
+        }
+    }
+
+    if (!success) {
+        printf("TLS 1.3 key derivation test FAIL! Mismatch with expected result.\n");
+    } else {
+        printf("TLS 1.3 key derivation test pass\n");
+    }
+
+    cudaFree(d_secret);
+    cudaFree(d_key);
+    cudaFree(d_iv);
+    return success;
+}
+
+bool test_tls13_key_derivation_256() {
+    const int secret_len = 48;
+    const int key_len = 32;
+    const int iv_len = 12;
+
+    unsigned char h_secret[secret_len] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+        0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f
+    };
+    // Generated via Python HKDF-Expand-Label (SHA-384) for secret 0x00..0x2f
+    // with 5000 iterations updating secret ^= key each round (first 32 bytes).
+    unsigned char h_expected_key[key_len] = {
+        0x44, 0xcc, 0x1e, 0x83, 0x31, 0x0d, 0x40, 0xc1,
+        0x44, 0xb6, 0x48, 0xb2, 0xa6, 0xb6, 0x9e, 0x08,
+        0x71, 0xe8, 0x4c, 0x43, 0x9f, 0xbf, 0x46, 0x89,
+        0x2c, 0x45, 0xc2, 0x1f, 0x61, 0x58, 0x15, 0x8e
+    };
+    unsigned char h_expected_iv[iv_len] = {
+        0xb0, 0x81, 0xb6, 0x7f, 0x8e, 0xe0, 0x2c, 0x63,
+        0xb0, 0xe9, 0x97, 0x06
+    };
+    unsigned char h_key[key_len];
+    unsigned char h_iv[iv_len];
+
+    unsigned char *d_secret = NULL;
+    unsigned char *d_key = NULL;
+    unsigned char *d_iv = NULL;
+
+    cudaMalloc((void**)&d_secret, secret_len * sizeof(unsigned char));
+    cudaMalloc((void**)&d_key, key_len * sizeof(unsigned char));
+    cudaMalloc((void**)&d_iv, iv_len * sizeof(unsigned char));
+    cudaMemcpy(d_secret, h_secret, secret_len * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
+    tls13_key_derivation_256_kernel<<<1, 1>>>(d_secret, secret_len, d_key, d_iv);
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    float elapsedTime;
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    printf("TLS 1.3 key derivation (AES-256) cuda runtime: %f ms\n", elapsedTime);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    cudaMemcpy(h_key, d_key, key_len * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_iv, d_iv, iv_len * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+
+    bool success = true;
+    for (int i = 0; i < key_len; i++) {
+        if (h_key[i] != h_expected_key[i]) {
+            success = false;
+            break;
+        }
+    }
+    if (success) {
+        for (int i = 0; i < iv_len; i++) {
+            if (h_iv[i] != h_expected_iv[i]) {
+                success = false;
+                break;
+            }
+        }
+    }
+
+    if (!success) {
+        printf("TLS 1.3 key derivation (AES-256) test FAIL! Mismatch with expected result.\n");
+    } else {
+        printf("TLS 1.3 key derivation (AES-256) test pass\n");
+    }
+
+    cudaFree(d_secret);
+    cudaFree(d_key);
+    cudaFree(d_iv);
+    return success;
+}
+
+bool test_tls13_app_traffic_secret_gcm128_sha256() {
+    // Generated via Python HKDF-Expand-Label (SHA-256) + AES-GCM with seq_num=5.
+    std::string app_traffic_secret = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    std::string aad_hex = "1703030020";
+    std::string ciphertext_hex = "09f7c03470ed108b2ed8bfbe5e2c4da925734825e6b5ad53a4493f65514ea966";
+    uint64_t seq_num = 5;
+
+    std::vector<unsigned char> secret_bytes = hexStringToByteArray(app_traffic_secret);
+    std::vector<unsigned char> aad_bytes = hexStringToByteArray(aad_hex);
+    std::vector<unsigned char> ciphertext_bytes = hexStringToByteArray(ciphertext_hex);
+
+    unsigned char* d_result = nullptr;
+    unsigned char* d_secret = nullptr;
+    unsigned char* d_aad = nullptr;
+    unsigned char* d_chiphertext = nullptr;
+
+    cudaMalloc((void**)&d_result, sizeof(unsigned char));
+    cudaMalloc((void**)&d_secret, secret_bytes.size() * sizeof(unsigned char));
+    cudaMalloc((void**)&d_aad, aad_bytes.size() * sizeof(unsigned char));
+    cudaMalloc((void**)&d_chiphertext, ciphertext_bytes.size() * sizeof(unsigned char));
+
+    cudaMemcpy(d_secret, secret_bytes.data(), secret_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_aad, aad_bytes.data(), aad_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_chiphertext, ciphertext_bytes.data(), ciphertext_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    short secret_len = static_cast<short>(secret_bytes.size());
+    short aad_length = static_cast<short>(aad_bytes.size());
+    short ciphertext_length = static_cast<short>(ciphertext_bytes.size());
+
+    tls13_verify_gcm128<<<1, 1>>>(d_result, d_secret, secret_len,
+                                  seq_num, d_aad, aad_length,
+                                  d_chiphertext, ciphertext_length);
+    cudaDeviceSynchronize();
+
+    unsigned char h_result = 0;
+    cudaMemcpy(&h_result, d_result, sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    bool success = (h_result != 0);
+
+    if (!success) {
+        printf("TLS 1.3 app traffic secret GCM128 test FAIL!\n");
+    } else {
+        printf("TLS 1.3 app traffic secret GCM128 test pass\n");
+    }
+
+    cudaFree(d_result);
+    cudaFree(d_secret);
+    cudaFree(d_aad);
+    cudaFree(d_chiphertext);
+
+    return success;
+}
+
+bool test_tls13_app_traffic_secret_gcm256_sha384() {
+    // Generated via Python HKDF-Expand-Label (SHA-384) + AES-GCM with seq_num=7.
+    std::string app_traffic_secret = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f";
+    std::string aad_hex = "1703030024";
+    std::string ciphertext_hex = "a6025e5797aab62289d20d7a7b3d404323aa0ebce015abb1fb6410886f4c7f70b8100555";
+    uint64_t seq_num = 7;
+
+    std::vector<unsigned char> secret_bytes = hexStringToByteArray(app_traffic_secret);
+    std::vector<unsigned char> aad_bytes = hexStringToByteArray(aad_hex);
+    std::vector<unsigned char> ciphertext_bytes = hexStringToByteArray(ciphertext_hex);
+
+    unsigned char* d_result = nullptr;
+    unsigned char* d_secret = nullptr;
+    unsigned char* d_aad = nullptr;
+    unsigned char* d_chiphertext = nullptr;
+
+    cudaMalloc((void**)&d_result, sizeof(unsigned char));
+    cudaMalloc((void**)&d_secret, secret_bytes.size() * sizeof(unsigned char));
+    cudaMalloc((void**)&d_aad, aad_bytes.size() * sizeof(unsigned char));
+    cudaMalloc((void**)&d_chiphertext, ciphertext_bytes.size() * sizeof(unsigned char));
+
+    cudaMemcpy(d_secret, secret_bytes.data(), secret_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_aad, aad_bytes.data(), aad_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_chiphertext, ciphertext_bytes.data(), ciphertext_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    short secret_len = static_cast<short>(secret_bytes.size());
+    short aad_length = static_cast<short>(aad_bytes.size());
+    short ciphertext_length = static_cast<short>(ciphertext_bytes.size());
+
+    tls13_verify_gcm256<<<1, 1>>>(d_result, d_secret, secret_len,
+                                  seq_num, d_aad, aad_length,
+                                  d_chiphertext, ciphertext_length);
+    cudaDeviceSynchronize();
+
+    unsigned char h_result = 0;
+    cudaMemcpy(&h_result, d_result, sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    bool success = (h_result != 0);
+
+    if (!success) {
+        printf("TLS 1.3 app traffic secret GCM256 test FAIL!\n");
+    } else {
+        printf("TLS 1.3 app traffic secret GCM256 test pass\n");
+    }
+
+    cudaFree(d_result);
+    cudaFree(d_secret);
+    cudaFree(d_aad);
+    cudaFree(d_chiphertext);
+
+    return success;
+}
+
+bool test_quic_app_traffic_secret_gcm128_sha256() {
+    std::string app_traffic_secret = "94048e2729a46528da18059848c02ae2ac434643644018b7f10ec70a8110109a";
+    std::string packet_hex = "5101d3f04c63fca7a6b3d18d4c83fcbf5a113eb363e4f385b9288f358171324e6e38b9b189700091961797cebe5dba22cbd3a0be5f999e4fc2c7cab8c7e78d76169ec5bfa9013eb487161635948d4ca8f9950c40dda9";
+
+    std::vector<unsigned char> secret_bytes = hexStringToByteArray(app_traffic_secret);
+    std::vector<unsigned char> packet_bytes = hexStringToByteArray(packet_hex);
+
+    if (secret_bytes.size() != 32 || packet_bytes.empty()) {
+        printf("QUIC test FAIL! Invalid input sizes.\n");
+        return false;
+    }
+    if (packet_bytes.size() > static_cast<size_t>(std::numeric_limits<short>::max())) {
+        printf("QUIC test FAIL! Packet too large for CUDA parameters.\n");
+        return false;
+    }
+
+    unsigned char* d_result = nullptr;
+    unsigned char* d_secret = nullptr;
+    unsigned char* d_packet = nullptr;
+
+    cudaMalloc((void**)&d_result, sizeof(unsigned char));
+    cudaMalloc((void**)&d_secret, secret_bytes.size() * sizeof(unsigned char));
+    cudaMalloc((void**)&d_packet, packet_bytes.size() * sizeof(unsigned char));
+
+    cudaMemcpy(d_secret, secret_bytes.data(), secret_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_packet, packet_bytes.data(), packet_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    bool success = false;
+    int matched_dcid_len = -1;
+    unsigned char h_result = 0;
+    short packet_length = static_cast<short>(packet_bytes.size());
+    short secret_length = static_cast<short>(secret_bytes.size());
+
+    // Short headers require a known DCID length; brute-force 0..20 to recover pn_offset.
+    for (int dcid_len = 0; dcid_len <= 20; dcid_len++) {
+        short pn_offset = static_cast<short>(1 + dcid_len);
+        if (pn_offset >= packet_length) {
+            continue;
+        }
+        quic_verify_gcm128<<<1, 1>>>(d_result, d_secret, secret_length, d_packet, packet_length, pn_offset);
+        cudaDeviceSynchronize();
+        cudaMemcpy(&h_result, d_result, sizeof(unsigned char), cudaMemcpyDeviceToHost);
+        if (h_result != 0) {
+            success = true;
+            matched_dcid_len = dcid_len;
+            break;
+        }
+    }
+
+    if (!success) {
+        printf("QUIC app traffic secret test FAIL! No matching dcid_len found.\n");
+    } else {
+        printf("QUIC app traffic secret test pass (dcid_len=%d)\n", matched_dcid_len);
+    }
+
+    cudaFree(d_result);
+    cudaFree(d_secret);
+    cudaFree(d_packet);
+
+    return success;
+}
+
 bool test_full_gcm128() {
 
     std::string master_secret = "afabc92e6ac6a0a785b6518c5bef8e1010d5ec2c95e8829cd769387e8840d73dfbd0e17f4c9bdddacdc61fef992b3c06";
@@ -478,13 +946,27 @@ bool test_full_gcm128() {
 
     const int AAD_LENGTH = 13;
 
-    // extract cipher text
-    const int ciphertext_len = client_finished_bytes.size() - AAD_LENGTH;
-    unsigned char* ciphertext_bytes = (unsigned char*) malloc(ciphertext_len);
-    memcpy(ciphertext_bytes, client_finished_bytes.data() + AAD_LENGTH, ciphertext_len);
+    // client_finished is a TLS record: header(5) || fragment
+    // fragment for TLS 1.2 AES-GCM: nonce_explicit(8) || ciphertext || tag(16)
+    if (client_finished_bytes.size() < 5 + 8 + 16) {
+        printf("full gcm check test FAIL! client_finished too short\n");
+        return false;
+    }
 
+    const int record_len = ((int)client_finished_bytes[3] << 8) | (int)client_finished_bytes[4];
+    if ((int)client_finished_bytes.size() < 5 + record_len) {
+        printf("full gcm check test FAIL! record length mismatch\n");
+        return false;
+    }
+
+    // Extract fragment (includes explicit nonce)
+    const int ciphertext_len = record_len;
+    unsigned char* ciphertext_bytes = (unsigned char*) malloc(ciphertext_len);
+    memcpy(ciphertext_bytes, client_finished_bytes.data() + 5, ciphertext_len);
+
+    // For this vector, seq_num is the record sequence number and matches the explicit nonce.
     uint64_t target_seq_num = 0;
-    memcpy(&target_seq_num, client_finished_bytes.data() + 5, 8);
+    memcpy(&target_seq_num, ciphertext_bytes, 8);
 
     // setup associated data
     unsigned char* aad_bytes = (unsigned char*) malloc(AAD_LENGTH);
@@ -560,9 +1042,423 @@ bool test_full_gcm128() {
     return success;
 }
 
+bool test_tls13_app_traffic_secret_gcm128_sha256_match() {
+    // User provided case
+    std::string app_traffic_secret = "2f04cf52fa8ce49d2a95869b55057be3541bb2a82768630a01d9558609dcd0d0";
+    std::string aad_hex = "1703030057";
+    std::string ciphertext_hex = "3b4aab0d4d225d605a4252ca602a8dab3572f7682afed4cbded2eebdc20abfc77951401dcb2a9f526caea93daa6ff52863363f2fcd2fa4b5235abc4b82e35b147c33fae786c9dabf6453bb4a11dcdb4fde19df89c98f16";
+    uint64_t seq_num = 0;
 
+    std::vector<unsigned char> secret_bytes = hexStringToByteArray(app_traffic_secret);
+    std::vector<unsigned char> aad_bytes = hexStringToByteArray(aad_hex);
+    std::vector<unsigned char> ciphertext_bytes = hexStringToByteArray(ciphertext_hex);
+
+    unsigned char* d_result = nullptr;
+    unsigned char* d_secret = nullptr;
+    unsigned char* d_aad = nullptr;
+    unsigned char* d_chiphertext = nullptr;
+
+    cudaMalloc((void**)&d_result, sizeof(unsigned char));
+    cudaMalloc((void**)&d_secret, secret_bytes.size() * sizeof(unsigned char));
+    cudaMalloc((void**)&d_aad, aad_bytes.size() * sizeof(unsigned char));
+    cudaMalloc((void**)&d_chiphertext, ciphertext_bytes.size() * sizeof(unsigned char));
+
+    cudaMemcpy(d_secret, secret_bytes.data(), secret_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_aad, aad_bytes.data(), aad_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_chiphertext, ciphertext_bytes.data(), ciphertext_bytes.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    short secret_len = static_cast<short>(secret_bytes.size());
+    short aad_length = static_cast<short>(aad_bytes.size());
+    short ciphertext_length = static_cast<short>(ciphertext_bytes.size());
+
+    tls13_verify_gcm128<<<1, 1>>>(d_result, d_secret, secret_len,
+                                  seq_num, d_aad, aad_length,
+                                  d_chiphertext, ciphertext_length);
+    cudaDeviceSynchronize();
+
+    unsigned char h_result = 0;
+    cudaMemcpy(&h_result, d_result, sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    bool success = (h_result != 0);
+
+    if (!success) {
+        printf("TLS 1.3 app traffic secret GCM128 match test FAIL!\n");
+    } else {
+        printf("TLS 1.3 app traffic secret GCM128 match test pass\n");
+    }
+
+    cudaFree(d_result);
+    cudaFree(d_secret);
+    cudaFree(d_aad);
+    cudaFree(d_chiphertext);
+
+    return success;
+}
+
+bool test_tls13_app_traffic_secret_scan_user_case() {
+    // User provided case for scanning
+    std::string app_traffic_secret = "2f04cf52fa8ce49d2a95869b55057be3541bb2a82768630a01d9558609dcd0d0";
+    std::string aad_hex = "1703030057";
+    std::string ciphertext_hex = "3b4aab0d4d225d605a4252ca602a8dab3572f7682afed4cbded2eebdc20abfc77951401dcb2a9f526caea93daa6ff52863363f2fcd2fa4b5235abc4b82e35b147c33fae786c9dabf6453bb4a11dcdb4fde19df89c98f16";
+    uint64_t seq_num = 0;
+
+    std::vector<unsigned char> secret_bytes = hexStringToByteArray(app_traffic_secret);
+    std::vector<unsigned char> aad_bytes = hexStringToByteArray(aad_hex);
+    std::vector<unsigned char> ciphertext_bytes = hexStringToByteArray(ciphertext_hex);
+
+    // Combine AAD and Ciphertext for app_data_record
+    std::vector<unsigned char> app_data_record = aad_bytes;
+    app_data_record.insert(app_data_record.end(), ciphertext_bytes.begin(), ciphertext_bytes.end());
+
+    // 1MB haystack
+    uint64_t haystack_size = 1024 * 1024;
+    std::vector<unsigned char> haystack(haystack_size);
+    
+    // Fill with random data
+    for(size_t i=0; i<haystack_size; ++i) {
+        haystack[i] = rand() % 256;
+    }
+
+    // Insert secret at random position.
+    uint64_t secret_len = secret_bytes.size();
+    uint64_t max_pos = haystack_size - secret_len;
+    uint64_t secret_pos = (rand() % (max_pos - 1)) + 1;
+    
+    for(size_t i=0; i<secret_len; ++i) {
+        haystack[secret_pos + i] = secret_bytes[i];
+    }
+
+    unsigned char client_random[32] = {0}; // All zeros
+
+    set_memory_alignment(1);
+
+    unsigned long long found_pos = tls_app_traffic_secret_0_gcm_128_sha_256_scan(
+        haystack.data(), haystack_size,
+        app_data_record.data(), app_data_record.size(),
+        seq_num, client_random,
+        0.0f, // entropyThreshold
+        true // client
+    );
+
+    bool success = (found_pos == secret_pos);
+
+    if (!success) {
+        printf("TLS 1.3 app traffic secret scan user case test FAIL! Expected %lu, found %llu\n", secret_pos, found_pos);
+    } else {
+        printf("TLS 1.3 app traffic secret scan user case test pass. Found at %llu\n", found_pos);
+    }
+
+    return success;
+}
+
+bool test_tls13_server_traffic_secret_scan_user_case() {
+    // User provided case for scanning server traffic secret
+    std::string app_traffic_secret = "f763c8f30da44fa012cddb50eff300c8093d200788c6fe9b7baaf729ea3e1f27";
+    // The whole record is AAD + Ciphertext
+    std::string record_hex = "1703030039853ccc4137920434777a7e042608d1f30f759634c4b9dcdd92a5db4fcbe2b3ea2cc5a34ada070fce70234891a4f26e1293ba95513301132c6e";
+    uint64_t seq_num = 1;
+
+    std::vector<unsigned char> secret_bytes = hexStringToByteArray(app_traffic_secret);
+    std::vector<unsigned char> app_data_record = hexStringToByteArray(record_hex);
+
+    // 1MB haystack
+    uint64_t haystack_size = 1024 * 1024;
+    std::vector<unsigned char> haystack(haystack_size);
+    
+    // Fill with random data
+    for(size_t i=0; i<haystack_size; ++i) {
+        haystack[i] = rand() % 256;
+    }
+
+    // Insert secret at random position.
+    uint64_t secret_len = secret_bytes.size();
+    uint64_t max_pos = haystack_size - secret_len;
+    uint64_t secret_pos = (rand() % (max_pos - 1)) + 1;
+    
+    for(size_t i=0; i<secret_len; ++i) {
+        haystack[secret_pos + i] = secret_bytes[i];
+    }
+
+    unsigned char client_random[32] = {0}; // All zeros
+
+    set_memory_alignment(1);
+
+    unsigned long long found_pos = tls_app_traffic_secret_0_gcm_128_sha_256_scan(
+        haystack.data(), haystack_size,
+        app_data_record.data(), app_data_record.size(),
+        seq_num, client_random,
+        0.0f, // entropyThreshold
+        false // client = false for server
+    );
+
+    bool success = (found_pos == secret_pos);
+
+    if (!success) {
+        printf("TLS 1.3 server traffic secret scan user case test FAIL! Expected %lu, found %llu\n", secret_pos, found_pos);
+    } else {
+        printf("TLS 1.3 server traffic secret scan user case test pass. Found at %llu\n", found_pos);
+    }
+
+    return success;
+}
+
+bool test_tls13_client_traffic_secret_scan_record_user_case() {
+    // User provided case for scanning client traffic secret using full TLS record.
+    std::string app_traffic_secret = "108e9cf0030ea1143063fe88f23d998e13d2ffc137c36a72f55893b807fa61a4";
+    std::string record_hex = "170303005797f20531ecea7f41c07ceac2325cbdd133ad0b148133d20b5b91ee7981b022cf4640f958e42802e1b40e3cf143539d1b2103ab23f58fa80768ae77ef0a401e437ff15c5ae6d45ea8bb1e0a0399dacf4109fc8f4b07722d";
+    uint64_t seq_num = 0;
+
+    std::vector<unsigned char> secret_bytes = hexStringToByteArray(app_traffic_secret);
+    std::vector<unsigned char> app_data_record = hexStringToByteArray(record_hex);
+
+    // 1MB haystack
+    uint64_t haystack_size = 1024 * 1024;
+    std::vector<unsigned char> haystack(haystack_size);
+    
+    // Fill with random data
+    for(size_t i=0; i<haystack_size; ++i) {
+        haystack[i] = rand() % 256;
+    }
+
+    // Insert secret at random position.
+    uint64_t secret_len = secret_bytes.size();
+    uint64_t max_pos = haystack_size - secret_len;
+    uint64_t secret_pos = (rand() % (max_pos - 1)) + 1;
+    
+    for(size_t i=0; i<secret_len; ++i) {
+        haystack[secret_pos + i] = secret_bytes[i];
+    }
+
+    unsigned char client_random[32] = {0}; // All zeros
+
+    set_memory_alignment(1);
+
+    unsigned long long found_pos = tls_app_traffic_secret_0_gcm_128_sha_256_scan(
+        haystack.data(), haystack_size,
+        app_data_record.data(), app_data_record.size(),
+        seq_num, client_random,
+        0.0f, // entropyThreshold
+        true // client
+    );
+
+    bool success = (found_pos == secret_pos);
+
+    if (!success) {
+        printf("TLS 1.3 client traffic secret scan record user case test FAIL! Expected %lu, found %llu\n", secret_pos, found_pos);
+    } else {
+        printf("TLS 1.3 client traffic secret scan record user case test pass. Found at %llu\n", found_pos);
+    }
+
+    return success;
+}
+
+bool test_tls13_server_traffic_secret_scan_record_user_case() {
+    // User provided case for scanning server traffic secret using full TLS record.
+    std::string app_traffic_secret = "f7328028a8bccc24a1bbad0e2244e941738713c4c9dc48f080cdc1a493926f11";
+    std::string record_hex = "17030300394230088cc85f26d93a1905bf4a80de27f45065069c4d510a9dcdcfb4bd3c5872f3ce8c35fd5b12fdf71a49ba79d44456cbb860fe66cf1523af";
+    uint64_t seq_num = 1;
+
+    std::vector<unsigned char> secret_bytes = hexStringToByteArray(app_traffic_secret);
+    std::vector<unsigned char> app_data_record = hexStringToByteArray(record_hex);
+
+    // 1MB haystack
+    uint64_t haystack_size = 1024 * 1024;
+    std::vector<unsigned char> haystack(haystack_size);
+    
+    // Fill with random data
+    for(size_t i=0; i<haystack_size; ++i) {
+        haystack[i] = rand() % 256;
+    }
+
+    // Insert secret at random position.
+    uint64_t secret_len = secret_bytes.size();
+    uint64_t max_pos = haystack_size - secret_len;
+    uint64_t secret_pos = (rand() % (max_pos - 1)) + 1;
+    
+    for(size_t i=0; i<secret_len; ++i) {
+        haystack[secret_pos + i] = secret_bytes[i];
+    }
+
+    unsigned char client_random[32] = {0}; // All zeros
+
+    set_memory_alignment(1);
+
+    unsigned long long found_pos = tls_app_traffic_secret_0_gcm_128_sha_256_scan(
+        haystack.data(), haystack_size,
+        app_data_record.data(), app_data_record.size(),
+        seq_num, client_random,
+        0.0f, // entropyThreshold
+        false // client
+    );
+
+    bool success = (found_pos == secret_pos);
+
+    if (!success) {
+        printf("TLS 1.3 server traffic secret scan record user case test FAIL! Expected %lu, found %llu\n", secret_pos, found_pos);
+    } else {
+        printf("TLS 1.3 server traffic secret scan record user case test pass. Found at %llu\n", found_pos);
+    }
+
+    return success;
+}
+
+
+bool test_tls12_master_secret_gcm128_sha256_scan() {
+    // Test case for TLS 1.2 AES-128-GCM with SHA-256
+    std::string master_secret = "6fdafd4dc2a2631af0d8ba952eb7a192b17591ea053b7cb98920747ccd2d8cb82cf3de0cd15a580a600acb26d4b8c04b";
+    std::string client_random = "4c2fb2a35c51ce12b33ee73748501238e67043b190545c50c0802ac37d68a104";
+    std::string server_random = "b5430dfdb6f6fb7e1e958c7b2a800795ebd8925d0447e6685b8c85714cf0cd18";
+    std::string client_finished = "160303002800000000000000004d0b39c8d79ce751d3f1223af2f55e825f3244f35ebcd5b41ecf23e095374bb8";
+
+    std::vector<unsigned char> master_secret_bytes = hexStringToByteArray(master_secret);
+    std::vector<unsigned char> client_random_bytes = hexStringToByteArray(client_random);
+    std::vector<unsigned char> server_random_bytes = hexStringToByteArray(server_random);
+    std::vector<unsigned char> client_finished_bytes = hexStringToByteArray(client_finished);
+
+    // 1MB haystack
+    uint64_t haystack_size = 1024 * 1024;
+    std::vector<unsigned char> haystack(haystack_size);
+
+    // Fill with random data
+    for (size_t i = 0; i < haystack_size; ++i) {
+        haystack[i] = rand() % 256;
+    }
+
+    // Insert master secret at a random position
+    uint64_t secret_len = master_secret_bytes.size();
+    uint64_t max_pos = haystack_size - secret_len;
+    uint64_t secret_pos = (rand() % (max_pos - 1)) + 1;
+
+    for (size_t i = 0; i < secret_len; ++i) {
+        haystack[secret_pos + i] = master_secret_bytes[i];
+    }
+
+    set_memory_alignment(1);
+
+    unsigned long long found_pos = tls12_master_secret_gcm_128_sha_256_scan(
+        haystack.data(), haystack_size,
+        client_random_bytes.data(), server_random_bytes.data(),
+        client_finished_bytes.data(), static_cast<int>(client_finished_bytes.size()),
+        0.0f // entropyThreshold
+    );
+
+    bool success = (found_pos == secret_pos);
+
+    if (!success) {
+        printf("TLS 1.2 master secret GCM128 SHA256 scan test FAIL! Expected %llu, found %llu\n", 
+               (unsigned long long)secret_pos, found_pos);
+    } else {
+        printf("TLS 1.2 master secret GCM128 SHA256 scan test pass. Found at %llu\n", found_pos);
+    }
+
+    return success;
+}
+
+bool test_tls12_master_secret_gcm256_sha384_scan() {
+    // Test case for TLS 1.2 AES-256-GCM with SHA-384
+    std::string master_secret = "9becb6ec75c7c063f551cbaa59e502e74106bbf01a946fd89b7701fa9e107eb68a4ade5ddae0521776bafdf394314124";
+    std::string client_random = "790b0d90abcb59f9763b1399b7c1b3d0636fcbf9dda40f349782d9f11551a413";
+    std::string server_random = "cec48108ad3417956b432014a232cc7edb4aef30a50263134a9df7a0cb8239e0";
+    std::string client_finished = "16030300280000000000000000c5b833d0932257d4601724302ca1d25e167593d50fe8a18ccfe026cb9f415c38";
+
+    std::vector<unsigned char> master_secret_bytes = hexStringToByteArray(master_secret);
+    std::vector<unsigned char> client_random_bytes = hexStringToByteArray(client_random);
+    std::vector<unsigned char> server_random_bytes = hexStringToByteArray(server_random);
+    std::vector<unsigned char> client_finished_bytes = hexStringToByteArray(client_finished);
+
+    // 1MB haystack
+    uint64_t haystack_size = 1024 * 1024;
+    std::vector<unsigned char> haystack(haystack_size);
+
+    // Fill with random data
+    for (size_t i = 0; i < haystack_size; ++i) {
+        haystack[i] = rand() % 256;
+    }
+
+    // Insert master secret at a random position
+    uint64_t secret_len = master_secret_bytes.size();
+    uint64_t max_pos = haystack_size - secret_len;
+    uint64_t secret_pos = (rand() % (max_pos - 1)) + 1;
+
+    for (size_t i = 0; i < secret_len; ++i) {
+        haystack[secret_pos + i] = master_secret_bytes[i];
+    }
+
+    set_memory_alignment(1);
+
+    unsigned long long found_pos = tls12_master_secret_gcm_256_sha_384_scan(
+        haystack.data(), haystack_size,
+        client_random_bytes.data(), server_random_bytes.data(),
+        client_finished_bytes.data(), static_cast<int>(client_finished_bytes.size()),
+        0.0f // entropyThreshold
+    );
+
+    bool success = (found_pos == secret_pos);
+
+    if (!success) {
+        printf("TLS 1.2 master secret GCM256 SHA384 scan test FAIL! Expected %llu, found %llu\n", 
+               (unsigned long long)secret_pos, found_pos);
+    } else {
+        printf("TLS 1.2 master secret GCM256 SHA384 scan test pass. Found at %llu\n", found_pos);
+    }
+
+    return success;
+}
+
+bool test_tls12_master_secret_gcm256_sha384_scan_wickr4() {
+    // Test case for TLS 1.2 AES-256-GCM with SHA-384 based on wickr4 capture
+    // Expected master secret to find
+    std::string master_secret = "242392ca815405754ed8e7acdf5a619360f757fed5beb16ee744a2b98ee6e6fa6d36848c72731cecaf040bd14a74dcf4";
+    std::string client_random = "5315cc894bce59c4bc4c5cff546a94dc146bb8300be802d82b9d62dfaec0f805";
+    std::string server_random = "68aed96d6cb768a0009fecc3f1d37b072e7f12695fdd3bc5444f574e47524401";
+    std::string client_finished = "16030300284c41337b968ace38930f0c5db99bff8f576b5d3e573bebd61a168c05605710479cd04752d9aecd85";
+
+    std::vector<unsigned char> master_secret_bytes = hexStringToByteArray(master_secret);
+    std::vector<unsigned char> client_random_bytes = hexStringToByteArray(client_random);
+    std::vector<unsigned char> server_random_bytes = hexStringToByteArray(server_random);
+    std::vector<unsigned char> client_finished_bytes = hexStringToByteArray(client_finished);
+
+    // 1MB haystack
+    uint64_t haystack_size = 1024 * 1024;
+    std::vector<unsigned char> haystack(haystack_size);
+
+    // Fill with random data
+    for (size_t i = 0; i < haystack_size; ++i) {
+        haystack[i] = rand() % 256;
+    }
+
+    // Insert master secret at a position aligned to 4 bytes (as per CLI --memory-alignment 4)
+    uint64_t secret_len = master_secret_bytes.size();
+    uint64_t max_pos = haystack_size - secret_len;
+    uint64_t secret_pos = ((rand() % (max_pos / 4 - 1)) + 1) * 4; // Align to 4 bytes
+
+    for (size_t i = 0; i < secret_len; ++i) {
+        haystack[secret_pos + i] = master_secret_bytes[i];
+    }
+
+    set_memory_alignment(4);
+
+    unsigned long long found_pos = tls12_master_secret_gcm_256_sha_384_scan(
+        haystack.data(), haystack_size,
+        client_random_bytes.data(), server_random_bytes.data(),
+        client_finished_bytes.data(), static_cast<int>(client_finished_bytes.size()),
+        3.0f // entropyThreshold as per CLI
+    );
+
+    bool success = (found_pos == secret_pos);
+
+    if (!success) {
+        printf("TLS 1.2 master secret GCM256 SHA384 wickr4 scan test FAIL! Expected %llu, found %llu\n", 
+               (unsigned long long)secret_pos, found_pos);
+    } else {
+        printf("TLS 1.2 master secret GCM256 SHA384 wickr4 scan test pass. Found at %llu\n", found_pos);
+    }
+
+    return success;
+}
 
 bool run_tests() {
+
+    if (!test_device_availability()) return false;
 
     bool suc0 = run_aes128_test();
     bool suc1 = run_aes256_test();
@@ -570,16 +1466,38 @@ bool run_tests() {
     bool suc3 = test_sha384();
     bool suc4 = test_hmac_sha256();
     bool suc5 = test_hmac_sha384();
-    bool suc6 = test_full_gcm128();
+    bool suc6 = test_tls13_key_derivation();
+    bool suc7 = test_tls13_key_derivation_256();
+    bool suc8 = test_tls13_app_traffic_secret_gcm128_sha256();
+    bool suc9 = test_tls13_app_traffic_secret_gcm256_sha384();
+    bool suc10 = test_full_gcm128();
+    bool suc11 = test_tls13_app_traffic_secret_gcm128_sha256_match();
+    bool suc12 = test_tls13_app_traffic_secret_scan_user_case();
+    bool suc13 = test_tls13_server_traffic_secret_scan_user_case();
+    bool suc14 = test_tls13_client_traffic_secret_scan_record_user_case();
+    bool suc15 = test_tls13_server_traffic_secret_scan_record_user_case();
+    bool suc16 = test_quic_app_traffic_secret_gcm128_sha256();
+    bool suc17 = test_tls12_master_secret_gcm128_sha256_scan();
+    bool suc18 = test_tls12_master_secret_gcm256_sha384_scan();
+    bool suc19 = test_tls12_master_secret_gcm256_sha384_scan_wickr4();
     return suc0 && 
            suc1 && 
            suc2 && 
            suc3 && 
            suc4 && 
            suc5 && 
-           suc6;
-}
-
-int main() {
-    run_tests();
+           suc6 &&
+           suc7 &&
+           suc8 &&
+           suc9 &&
+           suc10 &&
+           suc11 &&
+           suc12 &&
+           suc13 &&
+           suc14 &&
+           suc15 &&
+           suc16 &&
+           suc17 &&
+           suc18 &&
+           suc19;
 }

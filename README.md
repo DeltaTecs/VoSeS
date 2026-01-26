@@ -11,25 +11,66 @@ Then this tool works for you. Requirements:
 - the traffic must be encrypted with tls 1.2 or dtls 1.2
 - this tool supports only GCM_AES_128_SHA_256 and GCM_AES_256_SHA_384 encryption
 
+Install dependencies on Linux (Ubuntu/Debian):
+```bash
+sudo apt update
+sudo apt install build-essential cmake nvidia-cuda-toolkit
+```
+
 Compile on windows:
 1. `mkdir build`
 2. `cd build`
 3. `cmake ..`
 4. `cmake --build .`
 
+Compile on Linux:
+1. `make`
+
+Run Tests (Windows):
+1. `cmake --build . --target voses_tests --config Release`
+2. `.\Release\voses_tests.exe`
+
+Run Tests (Linux):
+1. `make test`
+
 Run:
 ```
-voses.exe
+voses.exe --tls12
   --client_random|-cr <32-byte hex>
   --server_random|-sr <32-byte hex>
   --client_finished|-cf <hex, max 61 bytes>
   --algorithm|-a <gcm_256_sha_384|gcm_128_sha_256>
   --haystack|-h <path>  (memory dump file path)
+  [--memory-alignment|-ma <int>]
+  [--entropy|-e <float>]
+  [--entropy-scan|-es]
+
+voses.exe --tls13
+  --app_data_record <path>
+  --seq_num <int>
+  --client_random|-cr <32-byte hex>
+  (--client|--server)
+  --algorithm|-a <gcm_256_sha_384|gcm_128_sha_256>
+  --haystack|-h <path>  (memory dump file path)
+  [--memory-alignment|-ma <int>]
+  [--entropy|-e <float>]
+  [--entropy-scan|-es]
+
+voses.exe --quic
+  --quic_packet <path>
+  [--dcid_len <int>]
+  --client_random|-cr <32-byte hex>
+  (--client|--server)
+  --algorithm|-a <gcm_256_sha_384|gcm_128_sha_256>
+  --haystack|-h <path>  (memory dump file path)
+  [--memory-alignment|-ma <int>]
   [--entropy|-e <float>]
   [--entropy-scan|-es]
 ```
 
 set entropy to a different filter value if you like. scan will show you how many 48 byte locations match your filter.
+
+Use `--tls13` with `--app_data_record` and `--seq_num` to scan for TLS 1.3 application traffic secret 0; in that mode you must supply `--client_random` and `--client` or `--server`. Use `--tls12` for TLS 1.2 master secret scans. Use `--quic` with a QUIC packet and optionally `--dcid_len` (required for short headers) to scan for QUIC application traffic secret 0.
 
 When a master secret matching your randoms and cipher text is found it will be printed in a format that can be read by wireshark as a master secret log file.
 
