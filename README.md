@@ -1,5 +1,5 @@
 # VoSeS
-Volatile Secret Searcher - massively parallel, brute force memory dump analysis for (D)TLS 1.2 secret extraction
+Volatile Secret Searcher - massively parallel, brute force memory dump analysis for (D)TLS and QUIC secret extraction
 
 You have:
 - A wireshark capture file of application traffic
@@ -8,7 +8,6 @@ and you want to decrypt the application traffic?
 
 Then this tool works for you. Requirements:
 - CUDA capable device * happy jensen noises *
-- the traffic must be encrypted with tls 1.2 or dtls 1.2
 - this tool supports only GCM_AES_128_SHA_256 and GCM_AES_256_SHA_384 encryption
 
 Install dependencies on Linux (Ubuntu/Debian):
