@@ -4,6 +4,7 @@ Volatile Secret Searcher - massively parallel, brute force memory dump analysis 
 You have:
 - A wireshark capture file of application traffic
 - A memory dump of the machine that was made while the application ran
+
 and you want to decrypt the application traffic?
 
 Then this tool works for you. Requirements:
